@@ -1,0 +1,17 @@
+[package]
+name = "hyperswarm-dht"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "rust implementation of the DHT powering the hyperswarm stack"
+documentation = "https://docs.rs/hyperswarm-dht/"
+repository = "https://github.com/mattsse/hyperswarm-dht"
+authors = ["Matthias Seitz <matthias.seitz@tum.de>"]
+edition = "2018"
+
+[dependencies]
+blake2-rfc = "0.2.18"
+rand = "0.7.3"
+anyhow = "1.0.31"
+bytes = "0.5.4"
+reqwest = "0.10.6"
