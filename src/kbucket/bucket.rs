@@ -25,8 +25,9 @@
 //! > buckets in a `KBucketsTable` and hence is enforced by the public API
 //! > of the `KBucketsTable` and in particular the public `Entry` API.
 
-use super::*;
 use crate::kbucket::K_VALUE;
+
+use super::*;
 
 /// A `PendingNode` is a `Node` that is pending insertion into a `KBucket`.
 #[derive(Debug, Clone)]
@@ -416,10 +417,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::VecDeque;
+
     use quickcheck::*;
     use rand::Rng;
-    use std::collections::VecDeque;
+
+    use super::*;
 
     impl Arbitrary for NodeStatus {
         fn arbitrary<G: Gen>(g: &mut G) -> NodeStatus {

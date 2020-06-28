@@ -1,11 +1,13 @@
-use crate::kbucket::KeyBytes;
-use crate::rpc::RequestId;
-use futures_codec::{Decoder, Encoder};
 use std::fmt;
 use std::fmt::Formatter;
 use std::io;
 use std::net::SocketAddr;
+
+use futures_codec::{Decoder, Encoder};
 use wasm_timer::Instant;
+
+use crate::kbucket::KeyBytes;
+use crate::rpc::RequestId;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
@@ -137,19 +139,4 @@ impl fmt::Display for Command {
             Command::Unknown(s) => f.write_str(s),
         }
     }
-}
-
-pub enum MessageState {
-    /// Waiting to send a message to the remote.
-    OutPendingSend { msg: Message, addr: SocketAddr },
-    /// Waiting to flush the substream so that the data arrives to the remote.
-    OutPendingFlush { req: RequestId, timestamp: Instant },
-    /// Waiting for an answer back from the remote.
-    OutWaitingAnswer { req: RequestId, timestamp: Instant },
-    /// Waiting for a request from the remote.
-    InWaitingMessage { req: RequestId },
-    /// Waiting to send an answer back to the remote.
-    InPendingSend { req: RequestId, msg: Message },
-    /// Waiting to flush an answer back to the remote.
-    InPendingFlush { req: RequestId, timestamp: Instant },
 }

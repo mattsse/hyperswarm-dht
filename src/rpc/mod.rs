@@ -1,17 +1,24 @@
 //! Make RPC calls over a Kademlia based DHT.
 
-use crate::kbucket::{self, KBucketsTable, KeyBytes};
-use crate::peers::{PeersCodec, PeersEncoding};
-use crate::rpc::io::Io;
-use crate::rpc::message::{Command, CommandCodec, Message};
-use futures::task::{Context, Poll};
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ops::Deref;
 use std::pin::Pin;
+
+use futures::pin_mut;
+use futures::task::{Context, Poll};
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::stream::Stream;
+
+use crate::rpc::io::RpcEvent;
+use crate::rpc::message::Type;
+use crate::{
+    kbucket::{self, KBucketsTable, KeyBytes},
+    peers::{PeersCodec, PeersEncoding},
+    rpc::io::Io,
+    rpc::message::{Command, CommandCodec, Message},
+};
 
 pub mod io;
 pub mod message;
@@ -32,6 +39,21 @@ pub struct DHT {
 impl DHT {
     pub fn bootstrap(&mut self) {
         unimplemented!()
+    }
+
+    #[inline]
+    pub fn commands(&self) -> &HashMap<String, Box<dyn CommandCodec>> {
+        &self.commands
+    }
+
+    #[inline]
+    pub fn commands_mut(&mut self) -> &mut HashMap<String, Box<dyn CommandCodec>> {
+        &mut self.commands
+    }
+
+    #[inline]
+    pub fn address(&self) -> &SocketAddr {
+        self.io.address()
     }
 
     pub fn query_and_update(&mut self) {
@@ -56,7 +78,7 @@ impl DHT {
         }
     }
 
-    fn on_command(&mut self, cmd: String, msg: Message, peer: Peer) -> CommandResult {
+    fn oncommand(&mut self, ty: Type, cmd: String, msg: Message, peer: Peer) -> CommandResult {
         if msg.target.is_none() {
             return Err(CommandError::MissingTarget);
         }
@@ -64,11 +86,11 @@ impl DHT {
             // TODO encoding/decoding + reply
             unimplemented!()
         } else {
-            Err(CommandError::UnknownCommand(cmd))
+            Err(CommandError::UnsupportedCommand(cmd))
         }
     }
 
-    fn onrequest(&mut self, msg: Message, peer: Peer) -> CommandResult {
+    fn onrequest(&mut self, ty: Type, msg: Message, peer: Peer) -> CommandResult {
         if let Some(id) = msg.valid_id() {
             self.add_node(id, peer.clone(), None, msg.to.clone());
         }
@@ -78,9 +100,10 @@ impl DHT {
                 Command::Ping => self.onping(msg, peer),
                 Command::FindNode => self.onfindnode(msg, peer),
                 Command::HolePunch => self.onholepunch(msg, peer),
-                Command::Unknown(s) => self.on_command(s, msg, peer),
+                Command::Unknown(s) => self.oncommand(ty, s, msg, peer),
             }
         } else {
+            // TODO reply_error
             Err(CommandError::MissingCommand)
         }
     }
@@ -100,8 +123,7 @@ impl DHT {
 
     fn onfindnode(&mut self, msg: Message, peer: Peer) -> CommandResult {
         if let Some(key) = msg.valid_key_bytes() {
-            let nodes = self.kbuckets.closest(&key).take(20).collect::<Vec<_>>();
-            let closer_nodes = PeersEncoding::encode(&nodes);
+            let closer_nodes = self.closer_nodes(&key, 20);
             // TODO error handling
             self.io.response(msg, None, Some(closer_nodes), peer);
         }
@@ -112,13 +134,41 @@ impl DHT {
     fn onholepunch(&mut self, msg: Message, peer: Peer) -> CommandResult {
         unimplemented!()
     }
+
+    fn reply_err(&mut self, error: String, value: Option<Vec<u8>>) {
+        unimplemented!()
+    }
+
+    fn closer_nodes(&mut self, key: &KeyBytes, num: usize) -> Vec<u8> {
+        let nodes = self.kbuckets.closest(key).take(20).collect::<Vec<_>>();
+        PeersEncoding::encode(&nodes)
+    }
+
+    fn inject_event(&mut self, event: RpcEvent) {
+        match event {
+            RpcEvent::OutMessage { .. } => {}
+            RpcEvent::OutSocketErr { .. } => {}
+            RpcEvent::InMessage { msg, peer, ty } => match ty {
+                Type::Query => {}
+                Type::Update => {}
+                Type::Response => {}
+            },
+            RpcEvent::InMessageErr { .. } => {}
+            RpcEvent::InSocketErr { .. } => {}
+            RpcEvent::InRequestBadId { .. } => {}
+        }
+    }
 }
 
 impl Stream for DHT {
-    type Item = anyhow::Result<DhtEvent>;
+    type Item = DhtEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
+
+        let io = &mut pin.io;
+        pin_mut!(io);
+        if let Poll::Ready(Some(event)) = Stream::poll_next(io, cx) {}
 
         // # Strategy
         // 1. poll IO
@@ -169,7 +219,7 @@ pub enum DhtEvent {
 pub type CommandResult = Result<(), CommandError>;
 
 pub enum CommandError {
-    UnknownCommand(String),
+    UnsupportedCommand(String),
     MissingTarget,
     MissingCommand,
 }

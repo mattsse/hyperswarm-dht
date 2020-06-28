@@ -1,26 +1,34 @@
-use crate::kbucket::KeyBytes;
-use crate::peers::PeersEncoding;
-use crate::rpc::message::{Command, Message, MessageState, Type};
-use crate::rpc::protocol::DhtRpcCodec;
-use crate::rpc::{Peer, RequestId, RoundTripPeer};
-use blake2_rfc::blake2b::{blake2b, Blake2b, Blake2bResult};
-use bytes::Bytes;
-use fnv::FnvHashMap;
-use futures::pin_mut;
-use futures::task::{Context, Poll};
-use futures::Sink;
-use prost::Message as ProtoMessage;
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
+
+use blake2_rfc::blake2b::{blake2b, Blake2b, Blake2bResult};
+use bytes::Bytes;
+use fnv::FnvHashMap;
+use futures::{
+    pin_mut,
+    task::{Context, Poll},
+    Sink,
+};
+use prost::Message as ProtoMessage;
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::{net::UdpSocket, stream::Stream};
-use tokio_util::codec::Encoder;
-use tokio_util::udp::UdpFramed;
+use tokio_util::{codec::Encoder, udp::UdpFramed};
+use wasm_timer::Instant;
+
+use crate::{
+    kbucket::KeyBytes,
+    peers::PeersEncoding,
+    rpc::message::{Command, Message, Type},
+    rpc::protocol::DhtRpcCodec,
+    rpc::{Peer, RequestId, RoundTripPeer},
+};
 
 pub const VERSION: u64 = 1;
+
+const ROTATE_INTERVAL: u64 = 300_000;
 
 // TODO merge this with the DHT struct
 pub struct Io {
@@ -39,6 +47,7 @@ pub struct Io {
     provider_record_ttl: Option<Duration>,
 
     next_req_id: RequestId,
+    rotation: Instant,
 }
 
 impl Io {
@@ -47,6 +56,10 @@ impl Io {
         let rid = self.next_req_id;
         self.next_req_id = RequestId(self.next_req_id.0.checked_add(1).unwrap_or_default());
         rid
+    }
+
+    pub fn address(&self) -> &SocketAddr {
+        unimplemented!()
     }
 
     fn token(&self, peer: &Peer, secret: &[u8]) -> Blake2bResult {
@@ -239,6 +252,11 @@ impl Io {
         }
     }
 
+    fn rotate_secrets(&mut self) {
+        std::mem::swap(&mut self.secrets.0, &mut self.secrets.1);
+        self.rotation = Instant::now();
+    }
+
     /// Drive a request to completion
     fn finish(&mut self, rid: RequestId, peer: &Peer) {
         // TODO necessary?
@@ -290,6 +308,11 @@ impl Stream for Io {
             Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(RpcEvent::InSocketErr { err })),
             _ => {}
         }
+
+        if pin.rotation + Duration::from_millis(ROTATE_INTERVAL) > Instant::now() {
+            pin.rotate_secrets();
+        }
+
         Poll::Pending
     }
 }

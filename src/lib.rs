@@ -1,11 +1,13 @@
 #![allow(unused)]
 
-use crate::kbucket::KBucketsTable;
-use futures::task::{Context, Poll};
-use futures::Stream;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
+
+use futures::task::{Context, Poll};
+use futures::Stream;
+
+use crate::kbucket::KBucketsTable;
 
 mod dht_proto {
     include!(concat!(env!("OUT_DIR"), "/dht_pb.rs"));

@@ -1,9 +1,11 @@
-use crate::kbucket::{self, EntryView, KeyBytes};
-use crate::rpc::Peer;
-use bytes::{Buf, BufMut};
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+
+use bytes::{Buf, BufMut};
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
+
+use crate::kbucket::{self, EntryView, KeyBytes};
+use crate::rpc::Peer;
 
 #[derive(Debug, Clone, Default)]
 pub struct PeersCodec {
