@@ -7,7 +7,10 @@ use futures_codec::{Decoder, Encoder};
 use wasm_timer::Instant;
 
 use crate::kbucket::KeyBytes;
+use crate::rpc::query::Query;
 use crate::rpc::RequestId;
+use sha2::digest::generic_array::GenericArray;
+use std::str::FromStr;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
@@ -16,6 +19,7 @@ pub struct Holepunch {
     #[prost(bytes, optional, tag = "3")]
     pub to: ::std::option::Option<std::vec::Vec<u8>>,
 }
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Message {
     #[prost(uint64, optional, tag = "11")]
@@ -46,6 +50,15 @@ pub struct Message {
 }
 
 impl Message {
+    fn as_valid_key_bytes(key: Option<&Vec<u8>>) -> Option<KeyBytes> {
+        if let Some(id) = key {
+            if id.len() == 32 {
+                return Some(KeyBytes::new(id.as_slice()));
+            }
+        }
+        None
+    }
+
     pub fn get_type(&self) -> Result<Type, i32> {
         match self.r#type {
             1 => Ok(Type::Query),
@@ -57,12 +70,7 @@ impl Message {
 
     pub fn get_command(&self) -> Option<Command> {
         if let Some(ref s) = self.command {
-            match s.as_str() {
-                "_holepunch" => Some(Command::HolePunch),
-                "_find_node" => Some(Command::FindNode),
-                "_ping" => Some(Command::Ping),
-                s => Some(Command::Unknown(s.to_string())),
-            }
+            Some(Command::from(s))
         } else {
             None
         }
@@ -72,13 +80,12 @@ impl Message {
         RequestId(self.rid)
     }
 
-    pub(crate) fn valid_key_bytes(&self) -> Option<KeyBytes> {
-        if let Some(ref id) = self.id {
-            if id.len() == 32 {
-                return Some(KeyBytes::new(id.as_slice()));
-            }
-        }
-        None
+    pub(crate) fn valid_id_key_bytes(&self) -> Option<KeyBytes> {
+        Self::as_valid_key_bytes(self.id.as_ref())
+    }
+
+    pub(crate) fn valid_target_key_bytes(&self) -> Option<KeyBytes> {
+        Self::as_valid_key_bytes(self.target.as_ref())
     }
 
     pub(crate) fn valid_id(&self) -> Option<&[u8]> {
@@ -118,9 +125,13 @@ impl Type {
     }
 }
 
+// TODO handle inputEncoding and outputEncoding differently
 pub trait CommandCodec:
     Encoder<Item = Vec<u8>, Error = io::Error> + Decoder<Item = Vec<u8>, Error = io::Error>
 {
+    fn update(&mut self, query: &Query) -> Result<Option<Vec<u8>>, String>;
+
+    fn query(&self, query: &Query) -> Result<Option<Vec<u8>>, String>;
 }
 
 pub enum Command {
@@ -128,6 +139,17 @@ pub enum Command {
     FindNode,
     HolePunch,
     Unknown(String),
+}
+
+impl<T: AsRef<str>> From<T> for Command {
+    fn from(s: T) -> Self {
+        match s.as_ref() {
+            "_holepunch" => Command::HolePunch,
+            "_find_node" => Command::FindNode,
+            "_ping" => Command::Ping,
+            s => Command::Unknown(s.to_string()),
+        }
+    }
 }
 
 impl fmt::Display for Command {
