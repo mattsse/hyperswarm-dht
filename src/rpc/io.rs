@@ -93,9 +93,11 @@ impl<TUserData> MessageEvent<TUserData> {
 pub struct Io<TUserData> {
     id: GenericArray<u8, U32>,
     socket: UdpFramed<DhtRpcCodec>,
+    /// Messages to send
     pending_send: VecDeque<MessageEvent<TUserData>>,
+    /// Current message
     pending_flush: Option<MessageEvent<TUserData>>,
-    // TODO id as key
+    /// Sent requests we currently wait for a response
     pending_recv: FnvHashMap<RequestId, Request<TUserData>>,
     secrets: ([u8; 32], [u8; 32]),
 
@@ -258,6 +260,7 @@ impl<TUserData> Io<TUserData> {
         roundtrip_token: Option<Vec<u8>>,
         user_data: TUserData,
     ) -> anyhow::Result<()> {
+        // TODO just push to queue
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Update.id(),
