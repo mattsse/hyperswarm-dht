@@ -14,9 +14,9 @@ use tokio::stream::Stream;
 
 use crate::kbucket::{Entry, Key, NodeStatus};
 use crate::peers::decode_peers;
-use crate::rpc::io::RpcEvent;
+use crate::rpc::io::IoHandlerEvent;
 use crate::rpc::message::Type;
-use crate::rpc::query::Query;
+use crate::rpc::query::{Query, QueryId, QueryPool};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     peers::{PeersCodec, PeersEncoding},
@@ -25,6 +25,7 @@ use crate::{
 };
 use bytes::{Bytes, BytesMut};
 use fnv::FnvHashSet;
+use std::time::Duration;
 
 pub mod io;
 pub mod message;
@@ -32,25 +33,39 @@ pub mod protocol;
 pub mod query;
 
 pub struct DHT {
-    id: GenericArray<u8, U32>,
+    id: Vec<u8>,
     query_id: Option<KeyBytes>,
     // TODO change socketAddr to IpV4?
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
     ephemeral: bool,
-    io: Io,
+    io: Io<QueryId>,
+    ping_interval: Duration,
+
+    /// The currently active (i.e. in-progress) queries.
+    queries: QueryPool,
+
     /// The currently connected peers.
     ///
     /// This is a superset of the connected peers currently in the routing table.
     connected_peers: FnvHashSet<Vec<u8>>,
+
     /// Commands for custom value encoding/decoding
     commands: HashMap<String, Box<dyn CommandCodec>>,
+
     /// Queued events to return when being polled.
     queued_events: VecDeque<DhtEvent>,
+
+    bootstrap_nodes: Vec<SocketAddr>,
+
+    bootstrapped: bool,
 }
 
 impl DHT {
     pub fn bootstrap(&mut self) {
-        unimplemented!()
+        if !self.bootstrap_nodes.is_empty() {
+            self.query(Command::FindNode, self.id.clone(), None);
+        }
+        self.bootstrapped = true;
     }
 
     #[inline]
@@ -70,20 +85,42 @@ impl DHT {
 
     /// Ping a remote
     pub fn ping(&mut self, peer: &Node) -> anyhow::Result<()> {
-        self.io.query(
-            Command::Ping,
-            None,
-            Some(peer.id.to_vec()),
-            Peer::from(peer.addr),
-        )
+        unimplemented!()
+        // self.io.query(
+        //     Command::Ping,
+        //     None,
+        //     Some(peer.id.to_vec()),
+        //     Peer::from(peer.addr),
+        // )
     }
 
-    pub fn query_and_update(&mut self) {
+    pub fn query_and_update(
+        &mut self,
+        cmd: impl Into<Command>,
+        target: Vec<u8>,
+        value: Option<Vec<u8>>,
+    ) {
+        self.run_command(cmd, target, value, true, true)
+    }
+
+    fn run_command(
+        &mut self,
+        cmd: impl Into<Command>,
+        target: Vec<u8>,
+        value: Option<Vec<u8>>,
+        query: bool,
+        update: bool,
+    ) {
+        // TODO collect querystream
         unimplemented!()
     }
 
-    pub fn query(&mut self, cmd: impl Into<Command>) {
-        unimplemented!()
+    pub fn query(&mut self, cmd: impl Into<Command>, target: Vec<u8>, value: Option<Vec<u8>>) {
+        self.run_command(cmd, target, value, true, false)
+    }
+
+    pub fn update(&mut self, cmd: impl Into<Command>, target: Vec<u8>, value: Option<Vec<u8>>) {
+        self.run_command(cmd, target, value, false, true)
     }
 
     fn add_node(
@@ -144,10 +181,6 @@ impl DHT {
         unimplemented!()
     }
 
-    fn run_command(&mut self) {
-        unimplemented!()
-    }
-
     /// Handle a response for our Ping command
     fn on_pong(&mut self, msg: &Message, peer: &Peer) {
         if let Some(to) = msg.to.as_ref().or(msg.value.as_ref()) {
@@ -165,21 +198,21 @@ impl DHT {
             ))))
     }
 
-    fn on_response(&mut self, msg: Message, peer: Peer) {
-        // TODO match command
-        if let Some(cmd) = msg.get_command() {
-            match cmd {
-                Command::Ping => self.on_pong(&msg, &peer),
-                Command::FindNode => {}
-                Command::HolePunch => {}
-                Command::Unknown(_) => {}
-            }
-        }
+    fn on_response(&mut self, req: Message, resp: Message, peer: Peer) {
+        // the response might not include the initial command
+        // if let Some(cmd) = req.get_command() {
+        //     match cmd {
+        //         Command::Ping => self.on_pong(&resp, &peer),
+        //         Command::FindNode => {}
+        //         Command::HolePunch => {}
+        //         Command::Unknown(_) => {}
+        //     }
+        // }
 
-        if let Some(id) = msg.valid_id() {
+        if let Some(id) = resp.valid_id() {
             self.connected_peers.insert(id.to_vec());
             // TODO self.connection_updated
-            self.add_node(id, peer, msg.roundtrip_token.clone(), msg.to.clone());
+            self.add_node(id, peer, resp.roundtrip_token.clone(), resp.to.clone());
         }
     }
 
@@ -230,10 +263,10 @@ impl DHT {
         }
     }
 
-    /// Handle an incoming request
-    fn on_request(&mut self, msg: Message, peer: Peer) -> RequestResult {
-        let ty = msg.get_type().map_err(|i| RequestError::InvalidType(i))?;
-
+    /// Handle an incoming request.
+    ///
+    /// Eventually send a response.
+    fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) -> RequestResult {
         if let Some(id) = msg.valid_id() {
             self.add_node(id, peer.clone(), None, msg.to.clone());
         }
@@ -263,6 +296,7 @@ impl DHT {
         }
     }
 
+    /// Handle a ping request
     fn on_ping(&mut self, msg: Message, peer: Peer) -> RequestResult {
         if let Some(ref val) = msg.value {
             if self.id.as_slice() == val.as_slice() {
@@ -310,28 +344,41 @@ impl DHT {
         Ok(())
     }
 
+    /// Get the `num` closest nodes in the bucket.
     fn closer_nodes(&mut self, key: &KeyBytes, num: usize) -> Vec<u8> {
         let nodes = self.kbuckets.closest(key).take(20).collect::<Vec<_>>();
         PeersEncoding::encode(&nodes)
     }
 
-    fn inject_event(&mut self, event: RpcEvent) {
+    fn inject_response(&mut self, req: Message, response: Message, peer: Peer) {}
+
+    /// Handle the event generated from the underlying IO
+    fn inject_event(&mut self, event: IoHandlerEvent<QueryId>) {
         match event {
-            RpcEvent::OutResponse { .. } => {}
-            RpcEvent::OutSocketErr { .. } => {}
-            RpcEvent::InRequest { msg, peer } => {
-                self.on_request(msg, peer);
+            IoHandlerEvent::OutResponse { .. } => {}
+            IoHandlerEvent::OutSocketErr { .. } => {}
+            IoHandlerEvent::InRequest { msg, peer, ty } => {
+                self.on_request(msg, peer, ty);
             }
-            RpcEvent::InMessageErr { .. } => {}
-            RpcEvent::InSocketErr { .. } => {}
-            RpcEvent::InResponseBadId { peer, .. } => {
+            IoHandlerEvent::InMessageErr { .. } => {}
+            IoHandlerEvent::InSocketErr { .. } => {}
+            IoHandlerEvent::InResponseBadId { peer, .. } => {
                 self.remove_node(peer);
             }
-            RpcEvent::OutRequest { id: _ } => {}
-            RpcEvent::InResponse { recv, sent, peer } => {
-                // TODO match command
+            IoHandlerEvent::OutRequest { id: _ } => {}
+            IoHandlerEvent::InResponse {
+                req,
+                resp,
+                peer,
+                user_data,
+            } => {
+
+                // TODO handle ping separately
+                // self.on_response(req, resp, peer);
+
+                // TODO delegate to querypool
             }
-            RpcEvent::RequestTimeout {
+            IoHandlerEvent::RequestTimeout {
                 msg: _,
                 peer: _,
                 sent: _,

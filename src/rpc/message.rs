@@ -7,6 +7,7 @@ use futures_codec::{Decoder, Encoder};
 use wasm_timer::Instant;
 
 use crate::kbucket::KeyBytes;
+use crate::peers::decode_peers;
 use crate::rpc::query::Query;
 use crate::rpc::RequestId;
 use sha2::digest::generic_array::GenericArray;
@@ -50,6 +51,18 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn is_query(&self) -> bool {
+        self.r#type == Type::Query.id()
+    }
+
+    pub fn is_response(&self) -> bool {
+        self.r#type == Type::Response.id()
+    }
+
+    pub fn is_update(&self) -> bool {
+        self.r#type == Type::Update.id()
+    }
+
     fn as_valid_key_bytes(key: Option<&Vec<u8>>) -> Option<KeyBytes> {
         if let Some(id) = key {
             if id.len() == 32 {
@@ -57,6 +70,13 @@ impl Message {
             }
         }
         None
+    }
+
+    /// The decoded address in `to`, if any
+    pub fn get_to_addr(&self) -> Option<SocketAddr> {
+        self.to
+            .as_ref()
+            .and_then(|to| decode_peers(to).into_iter().next())
     }
 
     pub fn get_type(&self) -> Result<Type, i32> {
