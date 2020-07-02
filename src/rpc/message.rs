@@ -2,16 +2,16 @@ use std::fmt;
 use std::fmt::Formatter;
 use std::io;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use futures_codec::{Decoder, Encoder};
+use sha2::digest::generic_array::GenericArray;
 use wasm_timer::Instant;
 
 use crate::kbucket::KeyBytes;
 use crate::peers::decode_peers;
 use crate::rpc::query::Query;
 use crate::rpc::RequestId;
-use sha2::digest::generic_array::GenericArray;
-use std::str::FromStr;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {

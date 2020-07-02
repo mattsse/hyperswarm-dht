@@ -1,12 +1,14 @@
+use std::net::SocketAddr;
+
+use fnv::FnvHashMap;
+use futures::task::Poll;
+use libp2p_kad;
+use wasm_timer::Instant;
+
 use crate::kbucket::KeyBytes;
 use crate::rpc::message::{Command, Message, Type};
 use crate::rpc::query::bootstrap::BootstrapPeersIter;
 use crate::rpc::{Node, Peer, PeerId, RequestId};
-use fnv::FnvHashMap;
-use futures::task::Poll;
-use libp2p_kad;
-use std::net::SocketAddr;
-use wasm_timer::Instant;
 
 mod bootstrap;
 mod peers;

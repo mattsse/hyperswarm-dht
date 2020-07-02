@@ -5,27 +5,31 @@ use std::hash::Hash;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ops::Deref;
 use std::pin::Pin;
+use std::time::Duration;
 
-use futures::stream::Stream;
-use futures::task::{Context, Poll};
-use futures::{pin_mut, TryStreamExt};
+use bytes::{Bytes, BytesMut};
+use fnv::FnvHashSet;
+use futures::{
+    pin_mut,
+    stream::Stream,
+    task::{Context, Poll},
+    TryStreamExt,
+};
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
-use crate::kbucket::{Entry, Key, NodeStatus};
-use crate::peers::decode_peers;
-use crate::rpc::io::IoHandlerEvent;
-use crate::rpc::message::Type;
-use crate::rpc::query::{table::QueryTable, Query, QueryId, QueryPool};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
+    kbucket::{Entry, Key, NodeStatus},
+    peers::decode_peers,
     peers::{PeersCodec, PeersEncoding},
-    rpc::io::Io,
-    rpc::message::{Command, CommandCodec, Message},
+    rpc::{
+        io::{Io, IoHandlerEvent},
+        message::Type,
+        message::{Command, CommandCodec, Message},
+        query::{table::QueryTable, Query, QueryId, QueryPool},
+    },
 };
-use bytes::{Bytes, BytesMut};
-use fnv::FnvHashSet;
-use std::time::Duration;
 
 pub mod io;
 pub mod message;

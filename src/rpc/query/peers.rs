@@ -1,5 +1,6 @@
-use crate::rpc::Peer;
 use std::borrow::Cow;
+
+use crate::rpc::Peer;
 
 /// The state of a peer iterator.
 #[derive(Debug, Clone, PartialEq, Eq)]

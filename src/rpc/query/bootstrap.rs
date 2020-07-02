@@ -1,7 +1,9 @@
+use std::{borrow::Cow, collections::hash_map::Entry, num::NonZeroUsize, vec};
+
+use fnv::FnvHashMap;
+
 use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::Peer;
-use fnv::FnvHashMap;
-use std::{borrow::Cow, collections::hash_map::Entry, num::NonZeroUsize, vec};
 
 /// A peer iterator for a fixed set of peers.
 pub struct BootstrapPeersIter {
