@@ -1,6 +1,7 @@
 use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
 use crate::rpc::message::Message;
-use crate::rpc::PeerId;
+use crate::rpc::query::fixed::FixedPeersIter;
+use crate::rpc::{self, PeerId};
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::net::SocketAddr;
 use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
@@ -31,6 +32,42 @@ impl QueryTable {
             target,
             closest_peers,
         }
+    }
+
+    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<&Peer> {
+        self.closest_peers
+            .values()
+            .filter(|p| p.key.preimage().addr == peer.addr)
+            .next()
+    }
+
+    pub fn get_token(&self, peer: &rpc::Peer) -> Option<&Vec<u8>> {
+        self.closest_peers
+            .values()
+            .filter(|p| p.key.preimage().addr == peer.addr)
+            .map(|p| p.state.get_token())
+            .next()
+            .flatten()
+    }
+
+    pub fn unverified_peers_iter(&self, parallelism: NonZeroUsize) -> FixedPeersIter {
+        FixedPeersIter::new(
+            self.closest_peers
+                .values()
+                .filter(|p| p.state.is_not_contacted())
+                .map(|p| rpc::Peer::from(p.key.preimage().addr)),
+            parallelism,
+        )
+    }
+
+    pub fn closest_peers_iter(&self, parallelism: NonZeroUsize) -> FixedPeersIter {
+        FixedPeersIter::new(
+            self.closest_peers
+                .values()
+                .take(K_VALUE.into())
+                .map(|p| rpc::Peer::from(p.key.preimage().addr)),
+            parallelism,
+        )
     }
 
     pub fn add_unverified(&mut self, peer: PeerId) {
@@ -65,31 +102,29 @@ impl QueryTable {
     }
 
     /// Set the state of every `Peer` to `PeerState::NotContacted`
-    fn set_not_contacted_all(&mut self) {
+    pub fn set_all_not_contacted(&mut self) {
         for peer in self.closest_peers.values_mut() {
             peer.state = PeerState::NotContacted;
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct QueryPeer {
-    id: KeyBytes,
-    addr: SocketAddr,
-    roundtrip_token: Option<Vec<u8>>,
-    referrer: Option<SocketAddr>,
-}
-
 /// Representation of a peer in the context of a iterator.
 #[derive(Debug, Clone)]
-struct Peer {
+pub(crate) struct Peer {
     key: Key<PeerId>,
     state: PeerState,
 }
 
+impl Peer {
+    pub(crate) fn state(&self) -> &PeerState {
+        &self.state
+    }
+}
+
 /// The state of a single `Peer`.
 #[derive(Debug, Clone)]
-enum PeerState {
+pub(crate) enum PeerState {
     /// The peer has not yet been contacted.
     ///
     /// This is the starting state for every peer.
@@ -113,4 +148,27 @@ enum PeerState {
     ///
     /// This is a final state, reached as a result of a call to `on_success`.
     Succeeded { roundtrip_token: Vec<u8> },
+}
+
+impl PeerState {
+    fn is_verified(&self) -> bool {
+        match self {
+            PeerState::Succeeded { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn is_not_contacted(&self) -> bool {
+        match self {
+            PeerState::NotContacted => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn get_token(&self) -> Option<&Vec<u8>> {
+        match self {
+            PeerState::Succeeded { roundtrip_token } => Some(roundtrip_token),
+            _ => None,
+        }
+    }
 }

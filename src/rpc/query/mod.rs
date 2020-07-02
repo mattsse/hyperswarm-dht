@@ -7,14 +7,16 @@ use wasm_timer::Instant;
 
 use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE};
 use crate::rpc::message::{Command, Message, Type};
-use crate::rpc::query::bootstrap::BootstrapPeersIter;
+use crate::rpc::query::fixed::FixedPeersIter;
+use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::query::table::QueryTable;
 use crate::rpc::{Node, Peer, PeerId, RequestId};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
-mod bootstrap;
+mod fixed;
 mod peers;
-pub mod table;
+mod table;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 pub struct QueryPool {
@@ -83,8 +85,9 @@ pub enum QueryPoolState<'a> {
 }
 
 pub struct QueryStream {
-    // TODO vecdeque with msgs or PeerIter structs?
     id: QueryId,
+    /// The permitted parallelism, i.e. number of pending results.
+    parallelism: NonZeroUsize,
     /// The peer iterator that drives the query state.
     peer_iter: QueryPeerIter,
     cmd: Command,
@@ -98,6 +101,7 @@ impl QueryStream {
     pub fn bootstrap<T, I, S>(
         id: QueryId,
         cmd: T,
+        parallelism: NonZeroUsize,
         ty: QueryType,
         local_id: KeyBytes,
         target: KeyBytes,
@@ -111,7 +115,8 @@ impl QueryStream {
     {
         Self {
             id,
-            peer_iter: QueryPeerIter::Bootstrap(BootstrapPeersIter::new(bootstrap, ALPHA_VALUE)),
+            parallelism,
+            peer_iter: QueryPeerIter::Bootstrap(FixedPeersIter::new(bootstrap, parallelism)),
             cmd: cmd.into(),
             stats: QueryStats::empty(),
             ty,
@@ -124,25 +129,66 @@ impl QueryStream {
         unimplemented!()
     }
 
-    fn move_closer(&mut self) {
-        if self.ty.is_update() {
-            // self.state = QueryState::Updating;
-        } else {
-            // self.state = QueryState::Finalized;
+    fn next_bootstrap(&mut self, state: PeersIterState) {
+        match state {
+            PeersIterState::Waiting(_) => {}
+            PeersIterState::WaitingAtCapacity => {}
+            PeersIterState::Finished => {
+                self.peer_iter =
+                    QueryPeerIter::MovingCloser(self.inner.unverified_peers_iter(self.parallelism));
+            }
         }
     }
 
+    fn next_moving_closer(&mut self, state: PeersIterState) {
+        match state {
+            PeersIterState::Waiting(peer) => {}
+            PeersIterState::WaitingAtCapacity => {}
+            PeersIterState::Finished => {
+                if self.ty.is_update() {
+                    self.inner.set_all_not_contacted();
+                    self.peer_iter =
+                        QueryPeerIter::Updating(self.inner.closest_peers_iter(self.parallelism));
+                } else {
+                    self.peer_iter = QueryPeerIter::Finalized;
+                }
+            }
+        }
+    }
+
+    fn next_update(&mut self, state: PeersIterState) {}
+
+    fn send(&self, peer: Peer) {}
+
     // TODO tick call 5000?
     pub fn poll(&mut self) -> Option<QueryEvent> {
+        let mut bootstrap = None;
+        let mut moving = None;
+        let mut updating = None;
+
+        match &mut self.peer_iter {
+            QueryPeerIter::Bootstrap(iter) => {
+                bootstrap = Some(iter.next());
+            }
+            QueryPeerIter::MovingCloser(iter) => {
+                moving = Some(iter.next());
+            }
+            QueryPeerIter::Updating(iter) => {
+                updating = Some(iter.next());
+            }
+            QueryPeerIter::Finalized => {}
+        }
+
         None
     }
 }
 
 /// The peer selection strategies that can be used by queries.
 enum QueryPeerIter {
-    Bootstrap(BootstrapPeersIter),
-    MovingCloser,
-    Updating,
+    Bootstrap(FixedPeersIter),
+    MovingCloser(FixedPeersIter),
+    Updating(FixedPeersIter),
+    Finalized,
 }
 
 /// Execution statistics of a query.
