@@ -6,17 +6,17 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::ops::Deref;
 use std::pin::Pin;
 
+use futures::stream::Stream;
 use futures::task::{Context, Poll};
 use futures::{pin_mut, TryStreamExt};
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use tokio::stream::Stream;
 
 use crate::kbucket::{Entry, Key, NodeStatus};
 use crate::peers::decode_peers;
 use crate::rpc::io::IoHandlerEvent;
 use crate::rpc::message::Type;
-use crate::rpc::query::{Query, QueryId, QueryPool};
+use crate::rpc::query::{table::QueryTable, Query, QueryId, QueryPool};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     peers::{PeersCodec, PeersEncoding},
@@ -42,7 +42,7 @@ pub struct DHT {
     ping_interval: Duration,
 
     /// The currently active (i.e. in-progress) queries.
-    queries: QueryPool,
+    queries: QueryPool<QueryTable>,
 
     /// The currently connected peers.
     ///

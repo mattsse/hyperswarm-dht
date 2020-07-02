@@ -1,20 +1,26 @@
 use crate::kbucket::KeyBytes;
 use crate::rpc::message::{Command, Message, Type};
+use crate::rpc::query::bootstrap::BootstrapPeersIter;
 use crate::rpc::{Node, Peer, PeerId, RequestId};
 use fnv::FnvHashMap;
 use futures::task::Poll;
+use libp2p_kad;
 use std::net::SocketAddr;
 use wasm_timer::Instant;
 
+mod bootstrap;
+mod peers;
+pub mod table;
+
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
-pub struct QueryPool {
-    queries: FnvHashMap<QueryId, QueryStream>,
+pub struct QueryPool<TInner> {
+    queries: FnvHashMap<QueryId, QueryStream<TInner>>,
     next_id: usize,
 }
 
-impl QueryPool {
+impl<TInner> QueryPool<TInner> {
     /// Returns an iterator over the queries in the pool.
-    pub fn iter(&self) -> impl Iterator<Item = &QueryStream> {
+    pub fn iter(&self) -> impl Iterator<Item = &QueryStream<TInner>> {
         self.queries.values()
     }
 
@@ -35,17 +41,17 @@ impl QueryPool {
     }
 
     /// Returns a reference to a query with the given ID, if it is in the pool.
-    pub fn get(&self, id: &QueryId) -> Option<&QueryStream> {
+    pub fn get(&self, id: &QueryId) -> Option<&QueryStream<TInner>> {
         self.queries.get(id)
     }
 
     /// Returns a mutable reference to a query with the given ID, if it is in the pool.
-    pub fn get_mut(&mut self, id: &QueryId) -> Option<&mut QueryStream> {
+    pub fn get_mut(&mut self, id: &QueryId) -> Option<&mut QueryStream<TInner>> {
         self.queries.get_mut(id)
     }
 
     /// Polls the pool to advance the queries.
-    pub fn poll(&mut self, now: Instant) -> QueryPoolState {
+    pub fn poll(&mut self, now: Instant) -> QueryPoolState<TInner> {
         if self.queries.is_empty() {
             return QueryPoolState::Idle;
         } else {
@@ -56,31 +62,33 @@ impl QueryPool {
 }
 
 /// The observable states emitted by [`QueryPool::poll`].
-pub enum QueryPoolState<'a> {
+pub enum QueryPoolState<'a, TInner> {
     /// The pool is idle, i.e. there are no queries to process.
     Idle,
     /// At least one query is waiting for results. `Some(request)` indicates
     /// that a new request is now being waited on.
-    Waiting(Option<&'a mut QueryStream>),
+    Waiting(Option<&'a mut QueryStream<TInner>>),
     /// A query has finished.
-    Finished(QueryStream),
+    Finished(QueryStream<TInner>),
     /// A query has timed out.
-    Timeout(QueryStream),
+    Timeout(QueryStream<TInner>),
 }
 
-pub struct QueryStream {
+pub struct QueryStream<TInner> {
     // TODO vecdeque with msgs or PeerIter structs?
     id: QueryId,
-    bootstrap: Vec<SocketAddr>,
+    /// The peer iterator that drives the query state.
+    peer_iter: QueryPeerIter,
     cmd: Command,
-    table: QueryTable,
     /// The internal query state.
     state: QueryState,
     stats: QueryStats,
     ty: QueryType,
+    /// The opaque inner query state.
+    pub inner: TInner,
 }
 
-impl QueryStream {
+impl<TInner> QueryStream<TInner> {
     // TODO return data
     fn inject_response(&mut self) -> Option<()> {
         unimplemented!()
@@ -109,6 +117,13 @@ impl QueryStream {
 
         None
     }
+}
+
+/// The peer selection strategies that can be used by queries.
+enum QueryPeerIter {
+    Bootstrap(BootstrapPeersIter),
+    MovingCloser,
+    Updating,
 }
 
 /// Execution statistics of a query.
@@ -164,33 +179,11 @@ pub enum QueryEvent {
     },
 }
 
-pub struct QueryTable {
-    k: u64,
-    id: KeyBytes,
-    target: KeyBytes,
-    closest: Vec<PeerId>,
-    unverified: Vec<PeerId>,
-}
-
 struct QueryPeer {
     id: Vec<u8>,
     addr: SocketAddr,
     queried: bool,
     distance: u64,
-}
-
-impl QueryTable {
-    pub fn new(id: KeyBytes, target: KeyBytes) -> Self {
-        Self {
-            k: 20,
-            id,
-            target,
-            closest: vec![],
-            unverified: vec![],
-        }
-    }
-
-    fn reset_queried(&mut self) {}
 }
 
 #[derive(Debug, Clone)]

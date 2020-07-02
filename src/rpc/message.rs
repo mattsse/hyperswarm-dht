@@ -96,6 +96,26 @@ impl Message {
         }
     }
 
+    fn cmd_eq(&self, name: &str) -> bool {
+        if let Some(ref cmd) = self.command {
+            cmd == name
+        } else {
+            false
+        }
+    }
+
+    pub fn is_ping(&self) -> bool {
+        self.cmd_eq("_ping")
+    }
+
+    pub fn is_find_node(&self) -> bool {
+        self.cmd_eq("_find_node")
+    }
+
+    pub fn is_holepunch(&self) -> bool {
+        self.cmd_eq("_holepunch")
+    }
+
     pub(crate) fn get_request_id(&self) -> RequestId {
         RequestId(self.rid)
     }
