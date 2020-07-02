@@ -5,24 +5,26 @@ use futures::task::Poll;
 use libp2p_kad;
 use wasm_timer::Instant;
 
-use crate::kbucket::KeyBytes;
+use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE};
 use crate::rpc::message::{Command, Message, Type};
 use crate::rpc::query::bootstrap::BootstrapPeersIter;
+use crate::rpc::query::table::QueryTable;
 use crate::rpc::{Node, Peer, PeerId, RequestId};
+use std::time::Duration;
 
 mod bootstrap;
 mod peers;
 pub mod table;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
-pub struct QueryPool<TInner> {
-    queries: FnvHashMap<QueryId, QueryStream<TInner>>,
+pub struct QueryPool {
+    queries: FnvHashMap<QueryId, QueryStream>,
     next_id: usize,
 }
 
-impl<TInner> QueryPool<TInner> {
+impl QueryPool {
     /// Returns an iterator over the queries in the pool.
-    pub fn iter(&self) -> impl Iterator<Item = &QueryStream<TInner>> {
+    pub fn iter(&self) -> impl Iterator<Item = &QueryStream> {
         self.queries.values()
     }
 
@@ -38,22 +40,26 @@ impl<TInner> QueryPool<TInner> {
     }
 
     /// Adds a query to the pool.
-    pub fn add_command(&mut self) -> QueryId {
+    pub fn add<T, I>(&mut self, cmd: T, peers: I) -> QueryId
+    where
+        T: Into<Command>,
+        I: IntoIterator<Item = Key<PeerId>>,
+    {
         unimplemented!()
     }
 
     /// Returns a reference to a query with the given ID, if it is in the pool.
-    pub fn get(&self, id: &QueryId) -> Option<&QueryStream<TInner>> {
+    pub fn get(&self, id: &QueryId) -> Option<&QueryStream> {
         self.queries.get(id)
     }
 
     /// Returns a mutable reference to a query with the given ID, if it is in the pool.
-    pub fn get_mut(&mut self, id: &QueryId) -> Option<&mut QueryStream<TInner>> {
+    pub fn get_mut(&mut self, id: &QueryId) -> Option<&mut QueryStream> {
         self.queries.get_mut(id)
     }
 
     /// Polls the pool to advance the queries.
-    pub fn poll(&mut self, now: Instant) -> QueryPoolState<TInner> {
+    pub fn poll(&mut self, now: Instant) -> QueryPoolState {
         if self.queries.is_empty() {
             return QueryPoolState::Idle;
         } else {
@@ -64,59 +70,70 @@ impl<TInner> QueryPool<TInner> {
 }
 
 /// The observable states emitted by [`QueryPool::poll`].
-pub enum QueryPoolState<'a, TInner> {
+pub enum QueryPoolState<'a> {
     /// The pool is idle, i.e. there are no queries to process.
     Idle,
     /// At least one query is waiting for results. `Some(request)` indicates
     /// that a new request is now being waited on.
-    Waiting(Option<&'a mut QueryStream<TInner>>),
+    Waiting(Option<&'a mut QueryStream>),
     /// A query has finished.
-    Finished(QueryStream<TInner>),
+    Finished(QueryStream),
     /// A query has timed out.
-    Timeout(QueryStream<TInner>),
+    Timeout(QueryStream),
 }
 
-pub struct QueryStream<TInner> {
+pub struct QueryStream {
     // TODO vecdeque with msgs or PeerIter structs?
     id: QueryId,
     /// The peer iterator that drives the query state.
     peer_iter: QueryPeerIter,
     cmd: Command,
-    /// The internal query state.
-    state: QueryState,
     stats: QueryStats,
     ty: QueryType,
-    /// The opaque inner query state.
-    pub inner: TInner,
+    /// The inner query state.
+    pub inner: QueryTable,
 }
 
-impl<TInner> QueryStream<TInner> {
+impl QueryStream {
+    pub fn bootstrap<T, I, S>(
+        id: QueryId,
+        cmd: T,
+        ty: QueryType,
+        local_id: KeyBytes,
+        target: KeyBytes,
+        peers: I,
+        bootstrap: S,
+    ) -> Self
+    where
+        T: Into<Command>,
+        I: IntoIterator<Item = Key<PeerId>>,
+        S: IntoIterator<Item = Peer>,
+    {
+        Self {
+            id,
+            peer_iter: QueryPeerIter::Bootstrap(BootstrapPeersIter::new(bootstrap, ALPHA_VALUE)),
+            cmd: cmd.into(),
+            stats: QueryStats::empty(),
+            ty,
+            inner: QueryTable::new(local_id, target, peers),
+        }
+    }
+
     // TODO return data
     fn inject_response(&mut self) -> Option<()> {
         unimplemented!()
     }
 
-    pub fn on_bootstrap(&mut self, nodes: &[PeerId]) {
-        self.state = QueryState::MovingCloser;
-    }
-
     fn move_closer(&mut self) {
         if self.ty.is_update() {
-            self.state = QueryState::Updating;
+            // self.state = QueryState::Updating;
         } else {
-            self.state = QueryState::Finalized;
+            // self.state = QueryState::Finalized;
         }
     }
 
     // TODO tick call 5000?
     pub fn poll(&mut self) -> Option<QueryEvent> {
-        match self.state {
-            QueryState::Bootstrapping => {}
-            QueryState::MovingCloser => {}
-            QueryState::Updating => {}
-            QueryState::Finalized => {}
-        }
-
         None
     }
 }
@@ -136,6 +153,79 @@ pub struct QueryStats {
     failure: u32,
     start: Option<Instant>,
     end: Option<Instant>,
+}
+
+impl QueryStats {
+    pub fn empty() -> Self {
+        QueryStats {
+            requests: 0,
+            success: 0,
+            failure: 0,
+            start: None,
+            end: None,
+        }
+    }
+
+    /// Gets the total number of requests initiated by the query.
+    pub fn num_requests(&self) -> u32 {
+        self.requests
+    }
+
+    /// Gets the number of successful requests.
+    pub fn num_successes(&self) -> u32 {
+        self.success
+    }
+
+    /// Gets the number of failed requests.
+    pub fn num_failures(&self) -> u32 {
+        self.failure
+    }
+
+    /// Gets the number of pending requests.
+    ///
+    /// > **Note**: A query can finish while still having pending
+    /// > requests, if the termination conditions are already met.
+    pub fn num_pending(&self) -> u32 {
+        self.requests - (self.success + self.failure)
+    }
+
+    /// Gets the duration of the query.
+    ///
+    /// If the query has not yet finished, the duration is measured from the
+    /// start of the query to the current instant.
+    ///
+    /// If the query did not yet start (i.e. yield the first peer to contact),
+    /// `None` is returned.
+    pub fn duration(&self) -> Option<Duration> {
+        if let Some(s) = self.start {
+            if let Some(e) = self.end {
+                Some(e - s)
+            } else {
+                Some(Instant::now() - s)
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Merges these stats with the given stats of another query,
+    /// e.g. to accumulate statistics from a multi-phase query.
+    ///
+    /// Counters are merged cumulatively while the instants for
+    /// start and end of the queries are taken as the minimum and
+    /// maximum, respectively.
+    pub fn merge(self, other: QueryStats) -> Self {
+        QueryStats {
+            requests: self.requests + other.requests,
+            success: self.success + other.success,
+            failure: self.failure + other.failure,
+            start: match (self.start, other.start) {
+                (Some(a), Some(b)) => Some(std::cmp::min(a, b)),
+                (a, b) => a.or(b),
+            },
+            end: std::cmp::max(self.end, other.end),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

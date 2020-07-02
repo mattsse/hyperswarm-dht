@@ -27,9 +27,10 @@ use crate::{
         io::{Io, IoHandlerEvent},
         message::Type,
         message::{Command, CommandCodec, Message},
-        query::{table::QueryTable, Query, QueryId, QueryPool},
+        query::{Query, QueryId, QueryPool},
     },
 };
+use std::borrow::Borrow;
 
 pub mod io;
 pub mod message;
@@ -46,7 +47,7 @@ pub struct DHT {
     ping_interval: Duration,
 
     /// The currently active (i.e. in-progress) queries.
-    queries: QueryPool<QueryTable>,
+    queries: QueryPool,
 
     /// The currently connected peers.
     ///
@@ -427,7 +428,14 @@ pub struct Peer {
 #[derive(Debug, Clone)]
 pub struct PeerId {
     pub addr: SocketAddr,
-    pub id: GenericArray<u8, U32>,
+    // TODO change to kbucket::Key?
+    pub id: Vec<u8>,
+}
+
+impl Borrow<[u8]> for PeerId {
+    fn borrow(&self) -> &[u8] {
+        &self.id
+    }
 }
 
 #[derive(Debug, Clone)]
