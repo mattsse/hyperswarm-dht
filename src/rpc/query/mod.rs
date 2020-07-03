@@ -23,6 +23,7 @@ mod table;
 pub struct QueryPool {
     queries: FnvHashMap<QueryId, QueryStream>,
     next_id: usize,
+    timeout: Duration,
 }
 
 impl QueryPool {
@@ -63,12 +64,54 @@ impl QueryPool {
 
     /// Polls the pool to advance the queries.
     pub fn poll(&mut self, now: Instant) -> QueryPoolState {
+        let mut finished = None;
+        let mut timeout = None;
+        let mut waiting = None;
+
+        for (&query_id, query) in self.queries.iter_mut() {
+            query.stats.start = query.stats.start.or(Some(now));
+            match query.poll(now) {
+                Poll::Ready(Some(ev)) => {
+                    waiting = Some((ev, query_id));
+                    break;
+                }
+                Poll::Ready(None) => {
+                    // query finished
+                    finished = Some(query_id);
+                    break;
+                }
+                Poll::Pending => {
+                    let elapsed = now - query.stats.start.unwrap_or(now);
+                    if elapsed >= self.timeout {
+                        timeout = Some(query_id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((event, query_id)) = waiting {
+            let query = self.queries.get_mut(&query_id).expect("s.a.");
+            return QueryPoolState::Waiting(Some((query, event)));
+        }
+
+        if let Some(query_id) = finished {
+            let mut query = self.queries.remove(&query_id).expect("s.a.");
+            query.stats.end = Some(now);
+            return QueryPoolState::Finished(query);
+        }
+
+        if let Some(query_id) = timeout {
+            let mut query = self.queries.remove(&query_id).expect("s.a.");
+            query.stats.end = Some(now);
+            return QueryPoolState::Timeout(query);
+        }
+
         if self.queries.is_empty() {
             return QueryPoolState::Idle;
         } else {
             return QueryPoolState::Waiting(None);
         }
-        unimplemented!()
     }
 }
 
@@ -78,7 +121,7 @@ pub enum QueryPoolState<'a> {
     Idle,
     /// At least one query is waiting for results. `Some(request)` indicates
     /// that a new request is now being waited on.
-    Waiting(Option<&'a mut QueryStream>),
+    Waiting(Option<(&'a mut QueryStream, QueryEvent)>),
     /// A query has finished.
     Finished(QueryStream),
     /// A query has timed out.
@@ -252,7 +295,7 @@ impl QueryStream {
     }
 
     // TODO tick call 5000?
-    pub fn poll(&mut self) -> Poll<Option<QueryEvent>> {
+    fn poll(&mut self, now: Instant) -> Poll<Option<QueryEvent>> {
         self.poll_iter()
     }
 }
@@ -289,8 +332,6 @@ impl QueryType {
 }
 
 pub enum QueryEvent {
-    /// Request including retries failed completely
-    Finished,
     Query {
         peer: Peer,
         command: Command,

@@ -18,6 +18,7 @@ use futures::{
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
+use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStream};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     kbucket::{Entry, Key, NodeStatus},
@@ -31,6 +32,7 @@ use crate::{
     },
 };
 use std::borrow::Borrow;
+use wasm_timer::Instant;
 
 pub mod io;
 pub mod message;
@@ -85,6 +87,11 @@ impl DHT {
     }
 
     #[inline]
+    pub fn register_command(&mut self, cmd: impl ToString) -> bool {
+        self.commands.insert(cmd.to_string())
+    }
+
+    #[inline]
     pub fn address(&self) -> &SocketAddr {
         self.io.address()
     }
@@ -99,6 +106,8 @@ impl DHT {
         //     Peer::from(peer.addr),
         // )
     }
+
+    fn reping(&mut self) {}
 
     pub fn query_and_update(
         &mut self,
@@ -195,13 +204,16 @@ impl DHT {
                 return;
             }
         }
+
         self.queued_events
             .push_back(DhtEvent::ResponseResult(Err(ResponseError::InvalidPong(
                 peer.clone(),
             ))))
     }
 
-    fn on_response(&mut self, req: Message, resp: Message, peer: Peer) {
+    fn on_response(&mut self, req: Message, resp: Message, peer: Peer, id: QueryId) {
+        if let Some(query) = self.queries.get_mut(&id) {}
+
         // the response might not include the initial command
         // if let Some(cmd) = req.get_command() {
         //     match cmd {
@@ -374,9 +386,8 @@ impl DHT {
                 peer,
                 user_data,
             } => {
-
                 // TODO handle ping separately
-                // self.on_response(req, resp, peer);
+                self.on_response(req, resp, peer, user_data);
 
                 // TODO delegate to querypool
             }
@@ -386,6 +397,16 @@ impl DHT {
                 sent: _,
             } => {}
         }
+    }
+
+    /// Handles a finished (i.e. successful) query.
+    fn query_finished(&mut self, query: QueryStream) -> Option<DhtEvent> {
+        unimplemented!()
+    }
+
+    /// Handles a query that timed out.
+    fn query_timeout(&self, query: QueryStream) -> Option<DhtEvent> {
+        unimplemented!()
     }
 }
 
@@ -400,6 +421,19 @@ impl Stream for DHT {
             return Poll::Ready(Some(event));
         }
 
+        loop {
+            match pin.queries.poll(Instant::now()) {
+                QueryPoolState::Waiting(Some(query)) => {}
+                QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
+                QueryPoolState::Timeout(q) => {
+                    if let Some(event) = pin.query_timeout(q) {
+                        // return Async::Ready(NetworkBehaviourAction::GenerateEvent(event))
+                    }
+                }
+                QueryPoolState::Waiting(None) | QueryPoolState::Idle => break,
+            }
+        }
+
         let io = &mut pin.io;
         pin_mut!(io);
         if let Poll::Ready(Some(event)) = Stream::poll_next(io, cx) {
@@ -410,6 +444,13 @@ impl Stream for DHT {
         // 1. poll IO
         // process io event
         // return dht event
+
+        // No immediate event was produced as a result of a finished query.
+        // If no new events have been queued either, signal `Pending` to
+        // be polled again later.
+        if pin.queued_events.is_empty() {
+            return Poll::Pending;
+        }
 
         Poll::Pending
     }
