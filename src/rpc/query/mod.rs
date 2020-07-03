@@ -93,6 +93,7 @@ pub struct QueryStream {
     cmd: Command,
     stats: QueryStats,
     ty: QueryType,
+    value: Option<Vec<u8>>,
     /// The inner query state.
     pub inner: QueryTable,
 }
@@ -105,6 +106,7 @@ impl QueryStream {
         ty: QueryType,
         local_id: KeyBytes,
         target: KeyBytes,
+        value: Option<Vec<u8>>,
         peers: I,
         bootstrap: S,
     ) -> Self
@@ -119,9 +121,25 @@ impl QueryStream {
             peer_iter: QueryPeerIter::Bootstrap(FixedPeersIter::new(bootstrap, parallelism)),
             cmd: cmd.into(),
             stats: QueryStats::empty(),
+            value,
             ty,
             inner: QueryTable::new(local_id, target, peers),
         }
+    }
+
+    pub fn command(&self) -> &Command {
+        &self.cmd
+    }
+
+    pub fn target(&self) -> &KeyBytes {
+        self.inner.target()
+    }
+    pub fn value(&self) -> Option<&Vec<u8>> {
+        self.value.as_ref()
+    }
+
+    pub fn id(&self) -> QueryId {
+        self.id
     }
 
     // TODO return data
@@ -131,7 +149,11 @@ impl QueryStream {
 
     fn next_bootstrap(&mut self, state: PeersIterState) {
         match state {
-            PeersIterState::Waiting(_) => {}
+            PeersIterState::Waiting(peer) => {
+                if let Some(peer) = peer {
+                } else {
+                }
+            }
             PeersIterState::WaitingAtCapacity => {}
             PeersIterState::Finished => {
                 self.peer_iter =
@@ -156,9 +178,20 @@ impl QueryStream {
         }
     }
 
-    fn next_update(&mut self, state: PeersIterState) {}
+    fn next_update(&mut self, state: PeersIterState) {
+        match state {
+            PeersIterState::Waiting(peer) => {}
+            PeersIterState::WaitingAtCapacity => {}
+            PeersIterState::Finished => {}
+        }
+    }
 
-    fn send(&self, peer: Peer) {}
+    fn send(&self, peer: Peer, update: bool) {
+        if update {
+        } else if self.ty.is_query() {
+        } else {
+        }
+    }
 
     // TODO tick call 5000?
     pub fn poll(&mut self) -> Option<QueryEvent> {
@@ -190,6 +223,67 @@ enum QueryPeerIter {
     Updating(FixedPeersIter),
     Finalized,
 }
+
+#[derive(Debug, Clone)]
+pub enum QueryType {
+    Query,
+    Update,
+    QueryUpdate,
+}
+
+impl QueryType {
+    pub fn is_query(&self) -> bool {
+        match self {
+            QueryType::Query | QueryType::QueryUpdate => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_update(&self) -> bool {
+        match self {
+            QueryType::Update | QueryType::QueryUpdate => true,
+            _ => false,
+        }
+    }
+}
+
+pub enum QueryEvent {
+    /// Request including retries failed completely
+    Finished,
+    Query {
+        peer: Peer,
+        command: Command,
+        value: Option<Vec<u8>>,
+    },
+    RemoveNode {
+        id: Vec<u8>,
+    },
+    Update {
+        peer: Peer,
+        command: Command,
+        value: Option<Vec<u8>>,
+        token: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Query {
+    /// Whether this a query/update response
+    pub ty: Type,
+    /// Command def
+    pub command: String,
+    /// the node who sent the query/update
+    // TODO change to `node`?
+    pub node: Peer,
+    /// the query/update target (32 byte target)
+    pub target: Option<Vec<u8>>,
+    /// the query/update payload decoded with the inputEncoding
+    pub value: Option<Vec<u8>>,
+}
+
+/// Unique identifier for an active query.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct QueryId(usize);
 
 /// Execution statistics of a query.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,103 +367,3 @@ impl QueryStats {
         }
     }
 }
-
-#[derive(Debug, Clone)]
-pub enum QueryType {
-    Query,
-    Update,
-    QueryUpdate,
-}
-
-impl QueryType {
-    pub fn is_query(&self) -> bool {
-        match self {
-            QueryType::Query | QueryType::QueryUpdate => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_update(&self) -> bool {
-        match self {
-            QueryType::Update | QueryType::QueryUpdate => true,
-            _ => false,
-        }
-    }
-}
-
-pub enum QueryEvent {
-    /// Request including retries failed completely
-    Finished,
-    Bootstrap {
-        target: Vec<u8>,
-        num: usize,
-    },
-    RemoveNode {
-        id: Vec<u8>,
-    },
-    Response {
-        ty: Type,
-        to: Option<SocketAddr>,
-        id: Option<Vec<u8>>,
-        peer: Peer,
-        value: Option<Vec<u8>>,
-        cmd: Command,
-    },
-}
-
-struct QueryPeer {
-    id: Vec<u8>,
-    addr: SocketAddr,
-    queried: bool,
-    distance: u64,
-}
-
-#[derive(Debug, Clone)]
-enum QueryState {
-    Bootstrapping,
-    MovingCloser,
-    Updating,
-    Finalized,
-}
-
-impl QueryState {
-    fn is_updating(&self) -> bool {
-        match self {
-            QueryState::Updating => true,
-            _ => false,
-        }
-    }
-
-    fn is_finalized(&self) -> bool {
-        match self {
-            QueryState::Finalized => true,
-            _ => false,
-        }
-    }
-
-    fn is_moving_closer(&self) -> bool {
-        match self {
-            QueryState::MovingCloser => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Query {
-    /// Whether this a query/update response
-    pub ty: Type,
-    /// Command def
-    pub command: String,
-    /// the node who sent the query/update
-    // TODO change to `node`?
-    pub node: Peer,
-    /// the query/update target (32 byte target)
-    pub target: Option<Vec<u8>>,
-    /// the query/update payload decoded with the inputEncoding
-    pub value: Option<Vec<u8>>,
-}
-
-/// Unique identifier for an active query.
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct QueryId(usize);

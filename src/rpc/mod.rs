@@ -1,6 +1,6 @@
 //! Make RPC calls over a Kademlia based DHT.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ops::Deref;
@@ -54,8 +54,8 @@ pub struct DHT {
     /// This is a superset of the connected peers currently in the routing table.
     connected_peers: FnvHashSet<Vec<u8>>,
 
-    /// Commands for custom value encoding/decoding
-    commands: HashMap<String, Box<dyn CommandCodec>>,
+    /// Custom commands
+    commands: HashSet<String>,
 
     /// Queued events to return when being polled.
     queued_events: VecDeque<DhtEvent>,
@@ -74,12 +74,12 @@ impl DHT {
     }
 
     #[inline]
-    pub fn commands(&self) -> &HashMap<String, Box<dyn CommandCodec>> {
+    pub fn commands(&self) -> &HashSet<String> {
         &self.commands
     }
 
     #[inline]
-    pub fn commands_mut(&mut self) -> &mut HashMap<String, Box<dyn CommandCodec>> {
+    pub fn commands_mut(&mut self) -> &mut HashSet<String> {
         &mut self.commands
     }
 
@@ -224,47 +224,37 @@ impl DHT {
     /// Handle a custom command request
     fn on_command(&mut self, ty: Type, command: String, msg: Message, peer: Peer) -> RequestResult {
         if msg.target.is_none() {
-            return Err(RequestError::MissingTarget);
+            return Err(RequestError::MissingTarget { msg, peer });
         }
-        if let Some(cmd) = self.commands.get_mut(&command) {
-            // apply custom cmd decoding
-            let value = msg
-                .value
-                .as_ref()
-                .map(|val| cmd.decode(&mut BytesMut::from(val.as_slice())))
-                .map_or(Ok(None), |r| {
-                    r.map(Some).map_err(|err| RequestError::QueryCodec(err))
-                })?;
+        if self.commands.contains(&command) {
+            // let res = if ty == Type::Update {
+            //     cmd.update(&query)
+            // } else {
+            //     cmd.query(&query)
+            // }
+            // .map(|val| {
+            //     val.map(|val| {
+            //         let mut bytes = BytesMut::with_capacity(val.len());
+            //         // TODO error handling
+            //         cmd.encode(val, &mut bytes);
+            //         bytes.to_vec()
+            //     })
+            // });
 
-            let query = Query {
-                ty,
-                command,
-                node: peer.clone(),
-                target: msg.target.clone(),
-                value: None,
-            };
-
-            let res = if ty == Type::Update {
-                cmd.update(&query)
+            if let Some(_) = msg.valid_target_key_bytes() {
+                let query = Query {
+                    ty,
+                    command,
+                    node: peer.clone(),
+                    target: msg.target.clone(),
+                    value: msg.value,
+                };
+                Ok(RequestOk::CustomCommandRequest { query })
             } else {
-                cmd.query(&query)
-            }
-            .map(|val| {
-                val.map(|val| {
-                    let mut bytes = BytesMut::with_capacity(val.len());
-                    // TODO error handling
-                    cmd.encode(val, &mut bytes);
-                    bytes.to_vec()
-                })
-            });
-
-            if let Some(keys) = msg.valid_target_key_bytes() {
-                self.reply(msg, peer, res, &keys)
-            } else {
-                Err(RequestError::MissingTarget)
+                Err(RequestError::MissingTarget { msg, peer })
             }
         } else {
-            Err(RequestError::UnsupportedCommand(command))
+            Err(RequestError::UnsupportedCommand { command, msg, peer })
         }
     }
 
@@ -286,7 +276,7 @@ impl DHT {
         } else {
             // TODO refactor with oncommand fn
             if msg.target.is_none() {
-                return Err(RequestError::MissingTarget);
+                return Err(RequestError::MissingTarget { peer, msg });
             }
             if let Some(key) = msg.valid_target_key_bytes() {
                 // TODO error handling
@@ -297,7 +287,7 @@ impl DHT {
                     &key,
                 );
             }
-            Err(RequestError::MissingCommand(peer))
+            Err(RequestError::MissingCommand { peer })
         }
     }
 
@@ -305,24 +295,26 @@ impl DHT {
     fn on_ping(&mut self, msg: Message, peer: Peer) -> RequestResult {
         if let Some(ref val) = msg.value {
             if self.id.as_slice() == val.as_slice() {
-                return Ok(());
+                // TODO handle
+                return Err(RequestError::InvalidValue { peer, msg });
             }
         }
 
         // TODO error handling
-        self.io.response(msg, Some(peer.encode()), None, peer);
+        self.io
+            .response(msg, Some(peer.encode()), None, peer.clone());
 
-        Ok(())
+        Ok(RequestOk::Responded { peer })
     }
 
     fn on_findnode(&mut self, msg: Message, peer: Peer) -> RequestResult {
         if let Some(key) = msg.valid_id_key_bytes() {
             let closer_nodes = self.closer_nodes(&key, 20);
             // TODO error handling
-            self.io.response(msg, None, Some(closer_nodes), peer);
+            self.io
+                .response(msg, None, Some(closer_nodes), peer.clone());
         }
-
-        Ok(())
+        Ok(RequestOk::Responded { peer })
     }
 
     fn on_holepunch(&mut self, msg: Message, peer: Peer) -> RequestResult {
@@ -339,14 +331,15 @@ impl DHT {
         let closer_nodes = self.closer_nodes(key, 20);
         match res {
             Ok(value) => {
-                self.io.response(msg, value, Some(closer_nodes), peer);
+                self.io
+                    .response(msg, value, Some(closer_nodes), peer.clone());
             }
             Err(err) => {
                 self.io
-                    .error(msg, Some(err), None, Some(closer_nodes), peer);
+                    .error(msg, Some(err), None, Some(closer_nodes), peer.clone());
             }
         }
-        Ok(())
+        Ok(RequestOk::Responded { peer })
     }
 
     /// Get the `num` closest nodes in the bucket.
@@ -478,7 +471,46 @@ pub enum DhtEvent {
     RemovedBadIdNode(Peer),
 }
 
-pub type RequestResult = Result<(), RequestError>;
+pub type RequestResult = Result<RequestOk, RequestError>;
+
+pub enum RequestOk {
+    Responded {
+        peer: Peer,
+    },
+    /// Custom request to a registered command
+    ///
+    /// # Note
+    ///
+    /// Custom commands are not automatically replied to and need to be answered manually
+    CustomCommandRequest {
+        query: Query,
+    },
+}
+
+pub enum RequestError {
+    UnsupportedCommand {
+        command: String,
+        msg: Message,
+        peer: Peer,
+    },
+    MissingTarget {
+        msg: Message,
+        peer: Peer,
+    },
+    InvalidType {
+        ty: i32,
+        msg: Message,
+        peer: Peer,
+    },
+    MissingCommand {
+        peer: Peer,
+    },
+    /// Ignore Request due to value being this peer's id
+    InvalidValue {
+        msg: Message,
+        peer: Peer,
+    },
+}
 
 pub type ResponseResult = Result<ResponseOk, ResponseError>;
 
@@ -488,12 +520,4 @@ pub enum ResponseOk {
 
 pub enum ResponseError {
     InvalidPong(Peer),
-}
-
-pub enum RequestError {
-    UnsupportedCommand(String),
-    MissingTarget,
-    InvalidType(i32),
-    MissingCommand(Peer),
-    QueryCodec(std::io::Error),
 }

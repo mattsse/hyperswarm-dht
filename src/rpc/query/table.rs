@@ -34,14 +34,20 @@ impl QueryTable {
         }
     }
 
-    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<&Peer> {
+    pub fn target(&self) -> &KeyBytes {
+        &self.target
+    }
+
+    pub(crate) fn get_peer(&self, peer: impl AsRef<rpc::Peer>) -> Option<&Peer> {
+        let peer = peer.as_ref();
         self.closest_peers
             .values()
             .filter(|p| p.key.preimage().addr == peer.addr)
             .next()
     }
 
-    pub fn get_token(&self, peer: &rpc::Peer) -> Option<&Vec<u8>> {
+    pub fn get_token(&self, peer: impl AsRef<rpc::Peer>) -> Option<&Vec<u8>> {
+        let peer = peer.as_ref();
         self.closest_peers
             .values()
             .filter(|p| p.key.preimage().addr == peer.addr)
