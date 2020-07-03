@@ -21,6 +21,7 @@ mod table;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 pub struct QueryPool {
+    local_id: Key<Vec<u8>>,
     queries: FnvHashMap<QueryId, QueryStream>,
     next_id: usize,
     timeout: Duration,
@@ -44,12 +45,34 @@ impl QueryPool {
     }
 
     /// Adds a query to the pool.
-    pub fn add<T, I>(&mut self, cmd: T, peers: I) -> QueryId
+    pub fn add<T, I, S>(
+        &mut self,
+        cmd: T,
+        peers: I,
+        query_type: QueryType,
+        target: Key<Vec<u8>>,
+        value: Option<Vec<u8>>,
+        bootstrap: S,
+    ) -> QueryId
     where
         T: Into<Command>,
         I: IntoIterator<Item = Key<PeerId>>,
+        S: IntoIterator<Item = Peer>,
     {
-        unimplemented!()
+        let id = self.next_query_id();
+        let query = QueryStream::bootstrap(
+            id,
+            cmd,
+            ALPHA_VALUE,
+            query_type,
+            self.local_id.clone(),
+            target,
+            value,
+            peers,
+            bootstrap,
+        );
+        self.queries.insert(id, query);
+        id
     }
 
     /// Returns a reference to a query with the given ID, if it is in the pool.

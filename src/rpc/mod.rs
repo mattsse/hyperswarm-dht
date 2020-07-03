@@ -18,7 +18,7 @@ use futures::{
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
-use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStream};
+use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStream, QueryType};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     kbucket::{Entry, Key, NodeStatus},
@@ -40,7 +40,7 @@ pub mod protocol;
 pub mod query;
 
 pub struct DHT {
-    id: Vec<u8>,
+    id: Key<Vec<u8>>,
     query_id: Option<KeyBytes>,
     // TODO change socketAddr to IpV4?
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
@@ -112,30 +112,40 @@ impl DHT {
     pub fn query_and_update(
         &mut self,
         cmd: impl Into<Command>,
-        target: Vec<u8>,
+        target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
     ) {
-        self.run_command(cmd, target, value, true, true)
+        self.run_command(cmd, target, value, QueryType::QueryUpdate)
     }
 
     fn run_command(
         &mut self,
         cmd: impl Into<Command>,
-        target: Vec<u8>,
+        target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
-        query: bool,
-        update: bool,
+        query_ty: QueryType,
     ) {
+        let peers = self
+            .kbuckets
+            .closest(&target)
+            .map(|e| PeerId::new(e.node.value.addr, e.node.key.preimage().clone()));
+
+        // self.queries.add(cmd, peers, query_ty, target, value, self.bootstrap_nodes.iter().cloned().map(Peer::from));
         // TODO collect querystream
         unimplemented!()
     }
 
-    pub fn query(&mut self, cmd: impl Into<Command>, target: Vec<u8>, value: Option<Vec<u8>>) {
-        self.run_command(cmd, target, value, true, false)
+    pub fn query(&mut self, cmd: impl Into<Command>, target: Key<Vec<u8>>, value: Option<Vec<u8>>) {
+        self.run_command(cmd, target, value, QueryType::Query)
     }
 
-    pub fn update(&mut self, cmd: impl Into<Command>, target: Vec<u8>, value: Option<Vec<u8>>) {
-        self.run_command(cmd, target, value, false, true)
+    pub fn update(
+        &mut self,
+        cmd: impl Into<Command>,
+        target: Key<Vec<u8>>,
+        value: Option<Vec<u8>>,
+    ) {
+        self.run_command(cmd, target, value, QueryType::Update)
     }
 
     fn add_node(
@@ -146,23 +156,21 @@ impl DHT {
         to: Option<Vec<u8>>,
     ) {
         let id = id.to_vec();
-        let key = kbucket::Key::new(id.clone());
+        let key = kbucket::Key::new(id);
         match self.kbuckets.entry(&key) {
             Entry::Present(_, _) => {}
             Entry::Pending(mut entry, _) => {
                 let n = entry.value();
-                n.id = id;
                 n.addr = peer.addr;
             }
             Entry::Absent(entry) => {
-                let status = if self.connected_peers.contains(&id) {
+                let status = if self.connected_peers.contains(key.preimage()) {
                     NodeStatus::Connected
                 } else {
                     NodeStatus::Disconnected
                 };
 
                 let node = Node {
-                    id,
                     addr: peer.addr,
                     roundtrip_token,
                     to,
@@ -310,7 +318,7 @@ impl DHT {
     /// Handle a ping request
     fn on_ping(&mut self, msg: Message, peer: Peer) -> RequestResult {
         if let Some(ref val) = msg.value {
-            if self.id.as_slice() == val.as_slice() {
+            if self.id.preimage() == val {
                 // TODO handle
                 return Err(RequestError::InvalidValue { peer, msg });
             }
@@ -470,6 +478,12 @@ pub struct PeerId {
     pub id: Vec<u8>,
 }
 
+impl PeerId {
+    fn new(addr: SocketAddr, id: Vec<u8>) -> Self {
+        Self { addr, id }
+    }
+}
+
 impl Borrow<[u8]> for PeerId {
     fn borrow(&self) -> &[u8] {
         &self.id
@@ -478,7 +492,6 @@ impl Borrow<[u8]> for PeerId {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub id: Vec<u8>,
     pub addr: SocketAddr,
     pub roundtrip_token: Option<Vec<u8>>,
     pub to: Option<Vec<u8>>,
