@@ -26,6 +26,7 @@ use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::Peer;
 
 /// A peer iterator for bootstrapping a query.
+#[derive(Debug)]
 pub struct FixedPeersIter {
     /// The permitted parallelism, i.e. number of pending results.
     parallelism: NonZeroUsize,
@@ -46,7 +47,7 @@ enum State {
     Finished,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum PeerState {
     /// The iterator is waiting for a result to be reported back for the peer.
     Waiting,
@@ -148,7 +149,7 @@ impl FixedPeersIter {
                             Entry::Vacant(e) => {
                                 *num_waiting += 1;
                                 e.insert(PeerState::Waiting);
-                                return PeersIterState::Waiting(Some(Cow::Owned(p)));
+                                return PeersIterState::Waiting(Some(p));
                             }
                         },
                     }

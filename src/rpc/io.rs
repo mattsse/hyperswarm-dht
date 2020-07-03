@@ -23,7 +23,7 @@ use crate::{
     peers::PeersEncoding,
     rpc::message::{Command, Message, Type},
     rpc::protocol::DhtRpcCodec,
-    rpc::{Peer, RequestId, RoundTripPeer},
+    rpc::{Peer, RequestId},
 };
 
 pub const VERSION: u64 = 1;

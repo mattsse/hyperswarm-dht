@@ -7,16 +7,17 @@ use std::net::SocketAddr;
 use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
 use wasm_timer::Instant;
 
+#[derive(Debug)]
 pub struct QueryTable {
-    id: KeyBytes,
-    target: KeyBytes,
+    id: Key<Vec<u8>>,
+    target: Key<Vec<u8>>,
     /// The closest peers to the target, ordered by increasing distance.
     // TODO change to simple Vec?
     closest_peers: BTreeMap<Distance, Peer>,
 }
 
 impl QueryTable {
-    pub fn new<T>(id: KeyBytes, target: KeyBytes, known_closest_peers: T) -> Self
+    pub fn new<T>(id: Key<Vec<u8>>, target: Key<Vec<u8>>, known_closest_peers: T) -> Self
     where
         T: IntoIterator<Item = Key<PeerId>>,
     {
@@ -34,20 +35,18 @@ impl QueryTable {
         }
     }
 
-    pub fn target(&self) -> &KeyBytes {
+    pub fn target(&self) -> &Key<Vec<u8>> {
         &self.target
     }
 
-    pub(crate) fn get_peer(&self, peer: impl AsRef<rpc::Peer>) -> Option<&Peer> {
-        let peer = peer.as_ref();
+    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<&Peer> {
         self.closest_peers
             .values()
             .filter(|p| p.key.preimage().addr == peer.addr)
             .next()
     }
 
-    pub fn get_token(&self, peer: impl AsRef<rpc::Peer>) -> Option<&Vec<u8>> {
-        let peer = peer.as_ref();
+    pub fn get_token(&self, peer: &rpc::Peer) -> Option<&Vec<u8>> {
         self.closest_peers
             .values()
             .filter(|p| p.key.preimage().addr == peer.addr)
@@ -87,7 +86,7 @@ impl QueryTable {
 
     pub fn add_verified(&mut self, peer: PeerId, roundtrip_token: Vec<u8>) {
         let key = Key::new(peer);
-        if key.as_ref() == &self.id {
+        if key == self.id {
             return;
         }
         if let Some(prev) = self

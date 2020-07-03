@@ -11,6 +11,7 @@ use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::query::table::QueryTable;
 use crate::rpc::{Node, Peer, PeerId, RequestId};
+use libp2p_kad::handler::KademliaHandlerEvent::QueryError;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -84,6 +85,7 @@ pub enum QueryPoolState<'a> {
     Timeout(QueryStream),
 }
 
+#[derive(Debug)]
 pub struct QueryStream {
     id: QueryId,
     /// The permitted parallelism, i.e. number of pending results.
@@ -104,8 +106,8 @@ impl QueryStream {
         cmd: T,
         parallelism: NonZeroUsize,
         ty: QueryType,
-        local_id: KeyBytes,
-        target: KeyBytes,
+        local_id: Key<Vec<u8>>,
+        target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
         peers: I,
         bootstrap: S,
@@ -131,7 +133,7 @@ impl QueryStream {
         &self.cmd
     }
 
-    pub fn target(&self) -> &KeyBytes {
+    pub fn target(&self) -> &Key<Vec<u8>> {
         self.inner.target()
     }
     pub fn value(&self) -> Option<&Vec<u8>> {
@@ -147,81 +149,120 @@ impl QueryStream {
         unimplemented!()
     }
 
-    fn next_bootstrap(&mut self, state: PeersIterState) {
+    fn next_bootstrap(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
                 if let Some(peer) = peer {
+                    Poll::Ready(Some(self.send(peer, false)))
                 } else {
+                    Poll::Pending
                 }
             }
-            PeersIterState::WaitingAtCapacity => {}
+            PeersIterState::WaitingAtCapacity => Poll::Pending,
             PeersIterState::Finished => {
                 self.peer_iter =
                     QueryPeerIter::MovingCloser(self.inner.unverified_peers_iter(self.parallelism));
+                self.poll_iter()
             }
         }
     }
 
-    fn next_moving_closer(&mut self, state: PeersIterState) {
+    fn next_move_closer(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
-            PeersIterState::Waiting(peer) => {}
-            PeersIterState::WaitingAtCapacity => {}
+            PeersIterState::Waiting(peer) => {
+                if let Some(peer) = peer {
+                    Poll::Ready(Some(self.send(peer, false)))
+                } else {
+                    Poll::Pending
+                }
+            }
+            PeersIterState::WaitingAtCapacity => Poll::Pending,
             PeersIterState::Finished => {
                 if self.ty.is_update() {
                     self.inner.set_all_not_contacted();
                     self.peer_iter =
                         QueryPeerIter::Updating(self.inner.closest_peers_iter(self.parallelism));
+                    self.poll_iter()
                 } else {
-                    self.peer_iter = QueryPeerIter::Finalized;
+                    Poll::Ready(None)
                 }
             }
         }
     }
 
-    fn next_update(&mut self, state: PeersIterState) {
+    fn next_update(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
-            PeersIterState::Waiting(peer) => {}
-            PeersIterState::WaitingAtCapacity => {}
-            PeersIterState::Finished => {}
+            PeersIterState::Waiting(peer) => {
+                if let Some(peer) = peer {
+                    Poll::Ready(Some(self.send(peer, true)))
+                } else {
+                    Poll::Pending
+                }
+            }
+            PeersIterState::WaitingAtCapacity => Poll::Pending,
+            PeersIterState::Finished => Poll::Ready(None),
         }
     }
 
-    fn send(&self, peer: Peer, update: bool) {
+    fn send(&self, peer: Peer, update: bool) -> QueryEvent {
         if update {
+            if let Some(token) = self.inner.get_token(&peer) {
+                QueryEvent::Update {
+                    command: self.cmd.clone(),
+                    token: Some(token.clone()),
+                    target: self.target().preimage().clone(),
+                    peer,
+                    value: self.value.clone(),
+                }
+            } else {
+                QueryEvent::MissingRoundtripToken { peer }
+            }
         } else if self.ty.is_query() {
+            QueryEvent::Query {
+                command: self.cmd.clone(),
+                target: self.target().preimage().clone(),
+                value: self.value.clone(),
+                peer,
+            }
         } else {
+            QueryEvent::Query {
+                command: Command::FindNode,
+                target: self.target().preimage().clone(),
+                value: None,
+                peer,
+            }
+        }
+    }
+
+    fn poll_iter(&mut self) -> Poll<Option<QueryEvent>> {
+        match &mut self.peer_iter {
+            QueryPeerIter::Bootstrap(iter) => {
+                let state = iter.next();
+                self.next_bootstrap(state)
+            }
+            QueryPeerIter::MovingCloser(iter) => {
+                let state = iter.next();
+                self.next_move_closer(state)
+            }
+            QueryPeerIter::Updating(iter) => {
+                let state = iter.next();
+                self.next_update(state)
+            }
         }
     }
 
     // TODO tick call 5000?
-    pub fn poll(&mut self) -> Option<QueryEvent> {
-        let mut bootstrap = None;
-        let mut moving = None;
-        let mut updating = None;
-
-        match &mut self.peer_iter {
-            QueryPeerIter::Bootstrap(iter) => {
-                bootstrap = Some(iter.next());
-            }
-            QueryPeerIter::MovingCloser(iter) => {
-                moving = Some(iter.next());
-            }
-            QueryPeerIter::Updating(iter) => {
-                updating = Some(iter.next());
-            }
-            QueryPeerIter::Finalized => {}
-        }
-
-        None
+    pub fn poll(&mut self) -> Poll<Option<QueryEvent>> {
+        self.poll_iter()
     }
 }
 
 /// The peer selection strategies that can be used by queries.
+#[derive(Debug)]
 enum QueryPeerIter {
     Bootstrap(FixedPeersIter),
     MovingCloser(FixedPeersIter),
     Updating(FixedPeersIter),
-    Finalized,
 }
 
 #[derive(Debug, Clone)]
@@ -253,14 +294,19 @@ pub enum QueryEvent {
     Query {
         peer: Peer,
         command: Command,
+        target: Vec<u8>,
         value: Option<Vec<u8>>,
     },
     RemoveNode {
         id: Vec<u8>,
     },
+    MissingRoundtripToken {
+        peer: Peer,
+    },
     Update {
         peer: Peer,
         command: Command,
+        target: Vec<u8>,
         value: Option<Vec<u8>>,
         token: Option<Vec<u8>>,
     },

@@ -60,6 +60,7 @@ pub struct DHT {
     /// Queued events to return when being polled.
     queued_events: VecDeque<DhtEvent>,
 
+    /// Nodes to bootstrap from
     bootstrap_nodes: Vec<SocketAddr>,
 
     bootstrapped: bool,
@@ -160,13 +161,10 @@ impl DHT {
 
                 match entry.insert(node, status) {
                     kbucket::InsertResult::Inserted => {
-                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        //     KademliaEvent::RoutingUpdated {
-                        //         peer: peer.clone(),
-                        //         addresses,
-                        //         old_peer: None,
-                        //     }
-                        // ));
+                        self.queued_events.push_back(DhtEvent::RoutingUpdated {
+                            peer: peer.clone(),
+                            old_peer: None,
+                        });
                     }
                     kbucket::InsertResult::Full => {
                         debug!("Bucket full. Peer not added to routing table: {:?}", peer)
@@ -261,22 +259,26 @@ impl DHT {
     /// Handle an incoming request.
     ///
     /// Eventually send a response.
-    fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) -> RequestResult {
+    fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) {
         if let Some(id) = msg.valid_id() {
             self.add_node(id, peer.clone(), None, msg.to.clone());
         }
 
         if let Some(cmd) = msg.get_command() {
-            match cmd {
+            let res = match cmd {
                 Command::Ping => self.on_ping(msg, peer),
                 Command::FindNode => self.on_findnode(msg, peer),
                 Command::HolePunch => self.on_holepunch(msg, peer),
                 Command::Unknown(s) => self.on_command(ty, s, msg, peer),
-            }
+            };
+            self.queued_events.push_back(DhtEvent::RequestResult(res));
         } else {
             // TODO refactor with oncommand fn
             if msg.target.is_none() {
-                return Err(RequestError::MissingTarget { peer, msg });
+                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                    RequestError::MissingTarget { peer, msg },
+                )));
+                return;
             }
             if let Some(key) = msg.valid_target_key_bytes() {
                 // TODO error handling
@@ -287,7 +289,9 @@ impl DHT {
                     &key,
                 );
             }
-            Err(RequestError::MissingCommand { peer })
+            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                RequestError::MissingCommand { peer },
+            )));
         }
     }
 
@@ -454,12 +458,6 @@ impl<T: Into<SocketAddr>> From<T> for Peer {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RoundTripPeer {
-    pub addr: SocketAddr,
-    pub roundtrip_token: Vec<u8>,
-}
-
 /// Unique identifier for a request. Must be passed back in order to answer a request from
 /// the remote.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -469,6 +467,14 @@ pub enum DhtEvent {
     RequestResult(RequestResult),
     ResponseResult(ResponseResult),
     RemovedBadIdNode(Peer),
+    /// The routing table has been updated.
+    RoutingUpdated {
+        /// The ID of the peer that was added or updated.
+        peer: Peer,
+        /// The ID of the peer that was evicted from the routing table to make
+        /// room for the new peer, if any.
+        old_peer: Option<PeerId>,
+    },
 }
 
 pub type RequestResult = Result<RequestOk, RequestError>;

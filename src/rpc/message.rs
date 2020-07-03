@@ -174,6 +174,7 @@ pub trait CommandCodec:
     fn query(&self, query: &Query) -> Result<Option<Vec<u8>>, String>;
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Command {
     Ping,
     FindNode,
