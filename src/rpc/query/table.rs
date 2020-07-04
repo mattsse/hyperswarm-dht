@@ -2,6 +2,7 @@ use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
 use crate::rpc::message::Message;
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::{self, PeerId};
+use fnv::FnvHashMap;
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::net::SocketAddr;
 use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
@@ -12,8 +13,7 @@ pub struct QueryTable {
     id: Key<Vec<u8>>,
     target: Key<Vec<u8>>,
     /// The closest peers to the target, ordered by increasing distance.
-    // TODO change to simple Vec?
-    closest_peers: BTreeMap<Distance, Peer>,
+    peers: FnvHashMap<Key<PeerId>, PeerState>,
 }
 
 impl QueryTable {
@@ -22,66 +22,67 @@ impl QueryTable {
         T: IntoIterator<Item = Key<PeerId>>,
     {
         // Initialise the closest peers to start the iterator with.
-        let closest_peers = BTreeMap::from_iter(known_closest_peers.into_iter().map(|key| {
-            let distance = key.distance(&target);
-            let state = PeerState::NotContacted;
-            (distance, Peer { key, state })
-        }));
+        let peers = FnvHashMap::from_iter(
+            known_closest_peers
+                .into_iter()
+                .map(|key| (key, PeerState::NotContacted)),
+        );
 
-        Self {
-            id,
-            target,
-            closest_peers,
-        }
+        Self { id, target, peers }
     }
 
     pub fn target(&self) -> &Key<Vec<u8>> {
         &self.target
     }
 
-    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<&Peer> {
-        self.closest_peers
-            .values()
-            .filter(|p| p.key.preimage().addr == peer.addr)
+    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<rpc::Peer> {
+        self.peers
+            .keys()
+            .filter(|p| p.preimage().addr == peer.addr)
+            .map(|p| rpc::Peer::from(p.preimage().addr))
             .next()
     }
 
     pub fn get_token(&self, peer: &rpc::Peer) -> Option<&Vec<u8>> {
-        self.closest_peers
-            .values()
-            .filter(|p| p.key.preimage().addr == peer.addr)
-            .map(|p| p.state.get_token())
+        self.peers
+            .iter()
+            .filter(|(p, _)| p.preimage().addr == peer.addr)
+            .map(|(_, s)| s.get_token())
             .next()
             .flatten()
     }
 
     pub fn unverified_peers_iter(&self, parallelism: NonZeroUsize) -> FixedPeersIter {
         FixedPeersIter::new(
-            self.closest_peers
-                .values()
-                .filter(|p| p.state.is_not_contacted())
-                .map(|p| rpc::Peer::from(p.key.preimage().addr)),
+            self.peers
+                .iter()
+                .filter(|(_, s)| s.is_not_contacted())
+                .map(|(p, _)| rpc::Peer::from(p.preimage().addr)),
             parallelism,
         )
     }
 
     pub fn closest_peers_iter(&self, parallelism: NonZeroUsize) -> FixedPeersIter {
+        let mut peers = self
+            .peers
+            .iter()
+            .filter(|(_, s)| s.is_not_contacted())
+            .map(|(p, _)| p)
+            .collect::<Vec<_>>();
+
+        peers.sort_by(|a, b| self.target.distance(a).cmp(&self.target.distance(b)));
+
         FixedPeersIter::new(
-            self.closest_peers
-                .values()
-                .take(K_VALUE.into())
-                .map(|p| rpc::Peer::from(p.key.preimage().addr)),
+            peers
+                .into_iter()
+                .take(usize::from(K_VALUE))
+                .map(|p| rpc::Peer::from(p.preimage().addr)),
             parallelism,
         )
     }
 
     pub fn add_unverified(&mut self, peer: PeerId) {
-        let peer = Peer {
-            key: Key::new(peer),
-            state: PeerState::NotContacted,
-        };
-        let distance = self.target.distance(&peer.key);
-        self.closest_peers.insert(distance, peer);
+        self.peers.insert(Key::new(peer), PeerState::NotContacted);
     }
 
     pub fn add_verified(&mut self, peer: PeerId, roundtrip_token: Vec<u8>) {
@@ -89,27 +90,18 @@ impl QueryTable {
         if key == self.id {
             return;
         }
-        if let Some(prev) = self
-            .closest_peers
-            .values_mut()
-            .filter(|p| p.key.as_ref() == key.as_ref())
-            .next()
-        {
-            prev.state = PeerState::Succeeded { roundtrip_token };
+        if let Some(prev) = self.peers.get_mut(&key) {
+            *prev = PeerState::Succeeded { roundtrip_token };
         } else {
-            let peer = Peer {
-                key,
-                state: PeerState::Succeeded { roundtrip_token },
-            };
-            let distance = self.target.distance(&peer.key);
-            self.closest_peers.insert(distance, peer);
+            self.peers
+                .insert(key, PeerState::Succeeded { roundtrip_token });
         }
     }
 
     /// Set the state of every `Peer` to `PeerState::NotContacted`
     pub fn set_all_not_contacted(&mut self) {
-        for peer in self.closest_peers.values_mut() {
-            peer.state = PeerState::NotContacted;
+        for state in self.peers.values_mut() {
+            *state = PeerState::NotContacted;
         }
     }
 }

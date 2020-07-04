@@ -10,7 +10,7 @@ use crate::rpc::message::{Command, Message, Type};
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::query::table::QueryTable;
-use crate::rpc::{Node, Peer, PeerId, RequestId};
+use crate::rpc::{Node, Peer, PeerId, RequestId, Response};
 use libp2p_kad::handler::KademliaHandlerEvent::QueryError;
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -211,7 +211,7 @@ impl QueryStream {
     }
 
     // TODO return data
-    fn inject_response(&mut self) -> Option<()> {
+    pub fn inject_response(&mut self, msg: Message, peer: Peer) -> Option<Response> {
         unimplemented!()
     }
 

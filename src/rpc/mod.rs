@@ -18,6 +18,7 @@ use futures::{
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
+use crate::kbucket::K_VALUE;
 use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStream, QueryType};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
@@ -42,7 +43,7 @@ pub mod query;
 pub struct DHT {
     id: Key<Vec<u8>>,
     query_id: Option<KeyBytes>,
-    // TODO change socketAddr to IpV4?
+    // TODO change Key to Key<PeerId>
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
     ephemeral: bool,
     io: Io<QueryId>,
@@ -57,6 +58,7 @@ pub struct DHT {
     connected_peers: FnvHashSet<Vec<u8>>,
 
     /// Custom commands
+    // TODO support custom encoding?
     commands: HashSet<String>,
 
     /// Queued events to return when being polled.
@@ -123,22 +125,31 @@ impl DHT {
         cmd: impl Into<Command>,
         target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
-        query_ty: QueryType,
+        query_type: QueryType,
     ) {
         let peers = self
             .kbuckets
             .closest(&target)
-            .map(|e| PeerId::new(e.node.value.addr, e.node.key.preimage().clone()));
+            .take(usize::from(K_VALUE))
+            .map(|e| PeerId::new(e.node.value.addr, e.node.key.preimage().clone()))
+            .map(Key::new)
+            .collect::<Vec<_>>();
 
-        // self.queries.add(cmd, peers, query_ty, target, value, self.bootstrap_nodes.iter().cloned().map(Peer::from));
-        // TODO collect querystream
-        unimplemented!()
+        self.queries.add(
+            cmd,
+            peers,
+            query_type,
+            target,
+            value,
+            self.bootstrap_nodes.iter().cloned().map(Peer::from),
+        );
     }
 
     pub fn query(&mut self, cmd: impl Into<Command>, target: Key<Vec<u8>>, value: Option<Vec<u8>>) {
         self.run_command(cmd, target, value, QueryType::Query)
     }
 
+    // TODO return query id to track?
     pub fn update(
         &mut self,
         cmd: impl Into<Command>,
@@ -220,7 +231,12 @@ impl DHT {
     }
 
     fn on_response(&mut self, req: Message, resp: Message, peer: Peer, id: QueryId) {
-        if let Some(query) = self.queries.get_mut(&id) {}
+        if let Some(query) = self.queries.get_mut(&id) {
+            if let Some(resp) = query.inject_response(resp, peer.clone()) {
+                self.queued_events
+                    .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))))
+            }
+        }
 
         // the response might not include the initial command
         // if let Some(cmd) = req.get_command() {
@@ -232,15 +248,21 @@ impl DHT {
         //     }
         // }
 
-        if let Some(id) = resp.valid_id() {
-            self.connected_peers.insert(id.to_vec());
-            // TODO self.connection_updated
-            self.add_node(id, peer, resp.roundtrip_token.clone(), resp.to.clone());
-        }
+        // if let Some(id) = resp.valid_id() {
+        //     self.connected_peers.insert(id.to_vec());
+        //     // TODO self.connection_updated
+        //     self.add_node(id, peer, resp.roundtrip_token.clone(), resp.to.clone());
+        // }
     }
 
     /// Handle a custom command request
-    fn on_command(&mut self, ty: Type, command: String, msg: Message, peer: Peer) -> RequestResult {
+    fn on_command_req(
+        &mut self,
+        ty: Type,
+        command: String,
+        msg: Message,
+        peer: Peer,
+    ) -> RequestResult {
         if msg.target.is_none() {
             return Err(RequestError::MissingTarget { msg, peer });
         }
@@ -289,7 +311,7 @@ impl DHT {
                 Command::Ping => self.on_ping(msg, peer),
                 Command::FindNode => self.on_findnode(msg, peer),
                 Command::HolePunch => self.on_holepunch(msg, peer),
-                Command::Unknown(s) => self.on_command(ty, s, msg, peer),
+                Command::Unknown(s) => self.on_command_req(ty, s, msg, peer),
             };
             self.queued_events.push_back(DhtEvent::RequestResult(res));
         } else {
@@ -368,7 +390,11 @@ impl DHT {
 
     /// Get the `num` closest nodes in the bucket.
     fn closer_nodes(&mut self, key: &KeyBytes, num: usize) -> Vec<u8> {
-        let nodes = self.kbuckets.closest(key).take(20).collect::<Vec<_>>();
+        let nodes = self
+            .kbuckets
+            .closest(key)
+            .take(usize::from(K_VALUE))
+            .collect::<Vec<_>>();
         PeersEncoding::encode(&nodes)
     }
 
@@ -512,6 +538,15 @@ impl<T: Into<SocketAddr>> From<T> for Peer {
     }
 }
 
+#[derive(Debug)]
+pub struct Response {
+    query: QueryId,
+    cmd: Command,
+    to: Option<SocketAddr>,
+    peer: PeerId,
+    value: Option<Vec<u8>>,
+}
+
 /// Unique identifier for a request. Must be passed back in order to answer a request from
 /// the remote.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -576,6 +611,7 @@ pub type ResponseResult = Result<ResponseOk, ResponseError>;
 
 pub enum ResponseOk {
     Pong(Peer),
+    Response(Response),
 }
 
 pub enum ResponseError {
