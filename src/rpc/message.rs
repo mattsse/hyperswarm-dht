@@ -8,10 +8,12 @@ use futures_codec::{Decoder, Encoder};
 use sha2::digest::generic_array::GenericArray;
 use wasm_timer::Instant;
 
+use crate::kbucket;
 use crate::kbucket::KeyBytes;
-use crate::peers::decode_peers;
+use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::Query;
-use crate::rpc::RequestId;
+use crate::rpc::{Peer, PeerId, RequestId};
+use std::convert::TryFrom;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
@@ -116,8 +118,32 @@ impl Message {
         self.cmd_eq("_holepunch")
     }
 
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
+
     pub(crate) fn get_request_id(&self) -> RequestId {
         RequestId(self.rid)
+    }
+
+    pub(crate) fn key(&self, peer: &Peer) -> Option<kbucket::Key<PeerId>> {
+        self.valid_id()
+            .map(|id| kbucket::Key::new(PeerId::new(peer.addr, id.to_vec())))
+    }
+
+    /// Decode the `to` field into `PeerId`
+    pub(crate) fn decode_to_peer(&self) -> Option<SocketAddr> {
+        self.to
+            .as_ref()
+            .and_then(|to| decode_peers(to.as_slice()).into_iter().next())
+    }
+
+    /// Decode the `to` field into `PeerId`
+    pub(crate) fn decode_closer_nodes(&self) -> Vec<PeerId> {
+        self.closer_nodes
+            .as_ref()
+            .map(|nodes| decode_peer_ids(nodes))
+            .unwrap_or_default()
     }
 
     pub(crate) fn valid_id_key_bytes(&self) -> Option<KeyBytes> {

@@ -9,8 +9,8 @@ use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE};
 use crate::rpc::message::{Command, Message, Type};
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
-use crate::rpc::query::table::QueryTable;
-use crate::rpc::{Node, Peer, PeerId, RequestId, Response};
+use crate::rpc::query::table::{PeerState, QueryTable};
+use crate::rpc::{Node, Peer, PeerId, RequestId, Response, ResponseResult};
 use libp2p_kad::handler::KademliaHandlerEvent::QueryError;
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -211,8 +211,42 @@ impl QueryStream {
     }
 
     // TODO return data
-    pub fn inject_response(&mut self, msg: Message, peer: Peer) -> Option<Response> {
-        unimplemented!()
+    pub fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
+        // check for errors
+        let remote = resp.key(&peer)?;
+
+        if resp.is_error() {
+            self.stats.failure += 1;
+            if let Some(state) = self.inner.peers_mut().get_mut(&remote) {
+                *state = PeerState::Failed;
+            }
+            // TODO return error?
+            return None;
+        }
+
+        if let QueryPeerIter::MovingCloser(_) = self.peer_iter {
+            for node in resp.decode_closer_nodes() {
+                self.inner.add_unverified(node);
+            }
+            if !self.ty.is_query() {
+                if let Some(token) = resp.roundtrip_token {
+                    self.inner.add_verified(remote, token);
+                }
+                return None;
+            }
+        }
+
+        if let Some(token) = resp.roundtrip_token.take() {
+            self.inner.add_verified(remote.clone(), token);
+        }
+
+        Some(Response {
+            query: self.id,
+            cmd: self.cmd.clone(),
+            to: resp.decode_to_peer(),
+            peer: PeerId::new(peer.addr, resp.id.take().expect("s.a")),
+            value: resp.value,
+        })
     }
 
     fn next_bootstrap(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {

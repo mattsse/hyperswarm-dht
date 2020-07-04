@@ -31,6 +31,14 @@ impl QueryTable {
         Self { id, target, peers }
     }
 
+    pub(crate) fn peers(&self) -> &FnvHashMap<Key<PeerId>, PeerState> {
+        &self.peers
+    }
+
+    pub(crate) fn peers_mut(&mut self) -> &mut FnvHashMap<Key<PeerId>, PeerState> {
+        &mut self.peers
+    }
+
     pub fn target(&self) -> &Key<Vec<u8>> {
         &self.target
     }
@@ -81,12 +89,11 @@ impl QueryTable {
         )
     }
 
-    pub fn add_unverified(&mut self, peer: PeerId) {
+    pub(crate) fn add_unverified(&mut self, peer: PeerId) {
         self.peers.insert(Key::new(peer), PeerState::NotContacted);
     }
 
-    pub fn add_verified(&mut self, peer: PeerId, roundtrip_token: Vec<u8>) {
-        let key = Key::new(peer);
+    pub(crate) fn add_verified(&mut self, key: Key<PeerId>, roundtrip_token: Vec<u8>) {
         if key == self.id {
             return;
         }
@@ -126,15 +133,6 @@ pub(crate) enum PeerState {
     ///
     /// This is the starting state for every peer.
     NotContacted,
-
-    /// The iterator is waiting for a result from the peer.
-    Waiting(Instant),
-
-    /// A result was not delivered for the peer within the configured timeout.
-    ///
-    /// The peer is not taken into account for the termination conditions
-    /// of the iterator until and unless it responds.
-    Unresponsive,
 
     /// Obtaining a result from the peer has failed.
     ///

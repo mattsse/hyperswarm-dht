@@ -46,9 +46,9 @@ fn decode_addr(peer: &[u8]) -> Option<SocketAddr> {
     Some(SocketAddr::V4(SocketAddrV4::new(ip, port)))
 }
 
-pub fn decode_peer_id(buf: impl AsRef<[u8]>) -> Vec<PeerId> {
+pub fn decode_peer_ids(buf: impl AsRef<[u8]>) -> Vec<PeerId> {
     let buf = buf.as_ref();
-    let mut peers = Vec::with_capacity(buf.len() / 48);
+    let mut peers = Vec::with_capacity(buf.len() / 38);
 
     for chunk in buf.chunks(38) {
         if let Ok(peer) = chunk.try_into() {
