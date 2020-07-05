@@ -18,11 +18,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::borrow::Borrow;
-use std::hash::{Hash, Hasher};
-
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use sha2::{Digest, Sha256};
+use std::borrow::Borrow;
+use std::hash::{Hash, Hasher};
 use uint::*;
 
 construct_uint! {
@@ -155,66 +154,3 @@ impl AsRef<KeyBytes> for KeyBytes {
 /// A distance between two keys in the DHT keyspace.
 #[derive(Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord, Debug)]
 pub struct Distance(pub(super) U256);
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-    // use quickcheck::*;
-    // use rand::Rng;
-    //
-    // impl Arbitrary for Key<PeerId> {
-    //     fn arbitrary<G: Gen>(_: &mut G) -> Key<PeerId> {
-    //         Key::from(PeerId::random())
-    //     }
-    // }
-    //
-    // impl Arbitrary for Key<Multihash> {
-    //     fn arbitrary<G: Gen>(_: &mut G) -> Key<Multihash> {
-    //         let hash = rand::thread_rng().gen::<[u8; 32]>();
-    //         Key::from(wrap(Code::Sha2_256, &hash))
-    //     }
-    // }
-    //
-    // #[test]
-    // fn identity() {
-    //     fn prop(a: Key<PeerId>) -> bool {
-    //         a.distance(&a) == Distance::default()
-    //     }
-    //     quickcheck(prop as fn(_) -> _)
-    // }
-    //
-    // #[test]
-    // fn symmetry() {
-    //     fn prop(a: Key<PeerId>, b: Key<PeerId>) -> bool {
-    //         a.distance(&b) == b.distance(&a)
-    //     }
-    //     quickcheck(prop as fn(_, _) -> _)
-    // }
-    //
-    // #[test]
-    // fn triangle_inequality() {
-    //     fn prop(a: Key<PeerId>, b: Key<PeerId>, c: Key<PeerId>) -> TestResult {
-    //         let ab = a.distance(&b);
-    //         let bc = b.distance(&c);
-    //         let (ab_plus_bc, overflow) = ab.0.overflowing_add(bc.0);
-    //         if overflow {
-    //             TestResult::discard()
-    //         } else {
-    //             TestResult::from_bool(a.distance(&c) <= Distance(ab_plus_bc))
-    //         }
-    //     }
-    //     quickcheck(prop as fn(_, _, _) -> _)
-    // }
-    //
-    // #[test]
-    // fn unidirectionality() {
-    //     fn prop(a: Key<PeerId>, b: Key<PeerId>) -> bool {
-    //         let d = a.distance(&b);
-    //         (0..100).all(|_| {
-    //             let c = Key::from(PeerId::random());
-    //             a.distance(&c) != d || b == c
-    //         })
-    //     }
-    //     quickcheck(prop as fn(_, _) -> _)
-    // }
-}
