@@ -463,6 +463,37 @@ impl DHT {
         }
     }
 
+    /// Delegate new query event to the io handler
+    fn inject_query_event(&mut self, id: QueryId, event: QueryEvent) -> Option<DhtEvent> {
+        match event {
+            QueryEvent::Query {
+                peer,
+                command,
+                target,
+                value,
+            } => {
+                self.io.query(command, Some(target), value, peer, id);
+            }
+            QueryEvent::RemoveNode { id } => {
+                self.remove_peer(id);
+            }
+            QueryEvent::MissingRoundtripToken { .. } => {
+                // TODO
+            }
+            QueryEvent::Update {
+                peer,
+                command,
+                target,
+                value,
+                token,
+            } => {
+                self.io
+                    .update(command, Some(target), value, peer, token, id);
+            }
+        }
+        None
+    }
+
     /// Handles a finished (i.e. successful) query.
     fn query_finished(&mut self, query: QueryStream) -> Option<DhtEvent> {
         let result = query.into_result();
@@ -500,7 +531,12 @@ impl Stream for DHT {
             // Look for a finished query.
             loop {
                 match pin.queries.poll(Instant::now()) {
-                    QueryPoolState::Waiting(Some(query)) => {}
+                    QueryPoolState::Waiting(Some((query, event))) => {
+                        let id = query.id();
+                        if let Some(event) = pin.inject_query_event(id, event) {
+                            return Poll::Ready(Some(event));
+                        }
+                    }
                     QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
                     QueryPoolState::Timeout(q) => {
                         if let Some(event) = pin.query_timeout(q) {
