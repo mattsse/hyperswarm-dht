@@ -208,13 +208,47 @@ impl DHT {
         }
     }
 
-    fn remove_node(&mut self, peer: Peer) {
-        DhtEvent::RemovedBadIdNode(peer);
-        unimplemented!()
+    /// Removes a peer from the routing table.
+    ///
+    /// Returns `None` if the peer was not in the routing table,
+    /// not even pending insertion.
+    pub fn remove_peer(
+        &mut self,
+        peer: Vec<u8>,
+    ) -> Option<kbucket::EntryView<kbucket::Key<Vec<u8>>, Node>> {
+        let key = kbucket::Key::new(peer);
+        match self.kbuckets.entry(&key) {
+            kbucket::Entry::Present(entry, _) => Some(entry.remove()),
+            kbucket::Entry::Pending(entry, _) => Some(entry.remove()),
+            kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => None,
+        }
+    }
+
+    fn remove_node(
+        &mut self,
+        peer: &Peer,
+    ) -> Option<kbucket::EntryView<kbucket::Key<Vec<u8>>, Node>> {
+        let id = self
+            .kbuckets
+            .iter()
+            .filter_map(|e| {
+                if e.node.value.addr == peer.addr {
+                    Some(e.node.key.clone())
+                } else {
+                    None
+                }
+            })
+            .next();
+
+        if let Some(id) = id {
+            self.remove_peer(id.into_preimage())
+        } else {
+            None
+        }
     }
 
     /// Handle a response for our Ping command
-    fn on_pong(&mut self, msg: &Message, peer: &Peer) {
+    fn on_pong(&mut self, msg: Message, peer: Peer) {
         if let Some(to) = msg.to.as_ref().or(msg.value.as_ref()) {
             if let Some(addr) = decode_peers(to).into_iter().next() {
                 self.queued_events
@@ -227,33 +261,22 @@ impl DHT {
 
         self.queued_events
             .push_back(DhtEvent::ResponseResult(Err(ResponseError::InvalidPong(
-                peer.clone(),
+                peer,
             ))))
     }
 
     fn on_response(&mut self, req: Message, resp: Message, peer: Peer, id: QueryId) {
+        if req.is_ping() {
+            self.on_pong(resp, peer);
+            return;
+        }
+
         if let Some(query) = self.queries.get_mut(&id) {
             if let Some(resp) = query.inject_response(resp, peer.clone()) {
                 self.queued_events
                     .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))))
             }
         }
-
-        // the response might not include the initial command
-        // if let Some(cmd) = req.get_command() {
-        //     match cmd {
-        //         Command::Ping => self.on_pong(&resp, &peer),
-        //         Command::FindNode => {}
-        //         Command::HolePunch => {}
-        //         Command::Unknown(_) => {}
-        //     }
-        // }
-
-        // if let Some(id) = resp.valid_id() {
-        //     self.connected_peers.insert(id.to_vec());
-        //     // TODO self.connection_updated
-        //     self.add_node(id, peer, resp.roundtrip_token.clone(), resp.to.clone());
-        // }
     }
 
     /// Handle a custom command request
@@ -412,19 +435,20 @@ impl DHT {
             IoHandlerEvent::InMessageErr { .. } => {}
             IoHandlerEvent::InSocketErr { .. } => {}
             IoHandlerEvent::InResponseBadId { peer, .. } => {
-                self.remove_node(peer);
+                // a bad id was supplied in the response from the peer
+                if self.remove_node(&peer).is_some() {
+                    self.queued_events
+                        .push_back(DhtEvent::RemovedBadIdNode(peer));
+                }
             }
-            IoHandlerEvent::OutRequest { id: _ } => {}
+            IoHandlerEvent::OutRequest { .. } => {}
             IoHandlerEvent::InResponse {
                 req,
                 resp,
                 peer,
                 user_data,
             } => {
-                // TODO handle ping separately
                 self.on_response(req, resp, peer, user_data);
-
-                // TODO delegate to querypool
             }
             IoHandlerEvent::RequestTimeout {
                 msg,
@@ -432,9 +456,9 @@ impl DHT {
                 sent,
                 user_data,
             } => {
-
-                // TODO remove remote node
-                // TODO if not ping, remove peer from pool
+                if let Some(query) = self.queries.get_mut(&user_data) {
+                    query.on_timeout(peer);
+                }
             }
         }
     }
@@ -444,12 +468,15 @@ impl DHT {
         let result = query.into_result();
 
         // add nodes to the table
-
         for (peer, token, to) in result.peers {
-            // self.add_node()
+            self.add_node(&peer.id, Peer::from(peer.addr), Some(token), to);
         }
 
-        unimplemented!()
+        Some(DhtEvent::QueryResult {
+            id: result.inner,
+            cmd: result.cmd,
+            stats: result.stats,
+        })
     }
 
     /// Handles a query that timed out.
@@ -464,44 +491,44 @@ impl Stream for DHT {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        // Drain queued events first.
-        if let Some(event) = pin.queued_events.pop_front() {
-            return Poll::Ready(Some(event));
-        }
-
         loop {
-            match pin.queries.poll(Instant::now()) {
-                QueryPoolState::Waiting(Some(query)) => {}
-                QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
-                QueryPoolState::Timeout(q) => {
-                    if let Some(event) = pin.query_timeout(q) {
-                        // TODO timeout failed remote
-                        // return Async::Ready(NetworkBehaviourAction::GenerateEvent(event))
+            // Drain queued events first.
+            if let Some(event) = pin.queued_events.pop_front() {
+                return Poll::Ready(Some(event));
+            }
+
+            // Look for a finished query.
+            loop {
+                match pin.queries.poll(Instant::now()) {
+                    QueryPoolState::Waiting(Some(query)) => {}
+                    QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
+                    QueryPoolState::Timeout(q) => {
+                        if let Some(event) = pin.query_timeout(q) {
+                            // TODO timeout failed remote
+                            // return Async::Ready(NetworkBehaviourAction::GenerateEvent(event))
+                        }
                     }
+                    QueryPoolState::Waiting(None) | QueryPoolState::Idle => break,
                 }
-                QueryPoolState::Waiting(None) | QueryPoolState::Idle => break,
+            }
+
+            // Look for a sent/received message
+            loop {
+                let io = &mut pin.io;
+                pin_mut!(io);
+                match Stream::poll_next(io, cx) {
+                    Poll::Ready(Some(event)) => pin.inject_event(event),
+                    _ => break,
+                }
+            }
+
+            // No immediate event was produced as a result of a finished query or socket.
+            // If no new events have been queued either, signal `Pending` to
+            // be polled again later.
+            if pin.queued_events.is_empty() {
+                return Poll::Pending;
             }
         }
-
-        let io = &mut pin.io;
-        pin_mut!(io);
-        if let Poll::Ready(Some(event)) = Stream::poll_next(io, cx) {
-            pin.inject_event(event)
-        }
-
-        // # Strategy
-        // 1. poll IO
-        // process io event
-        // return dht event
-
-        // No immediate event was produced as a result of a finished query.
-        // If no new events have been queued either, signal `Pending` to
-        // be polled again later.
-        if pin.queued_events.is_empty() {
-            return Poll::Pending;
-        }
-
-        Poll::Pending
     }
 }
 

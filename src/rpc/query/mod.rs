@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use fnv::FnvHashMap;
 use futures::task::Poll;
-use libp2p_kad;
 use wasm_timer::Instant;
 
 use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE};
@@ -11,7 +10,6 @@ use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::query::table::{PeerState, QueryTable};
 use crate::rpc::{Node, Peer, PeerId, RequestId, Response, ResponseResult};
-use libp2p_kad::handler::KademliaHandlerEvent::QueryError;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -210,8 +208,18 @@ impl QueryStream {
         self.id
     }
 
-    // TODO return data
-    pub fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
+    pub(crate) fn on_timeout(&mut self, peer: Peer) {
+        self.stats.failure += 1;
+        for (p, state) in self.inner.peers_mut() {
+            if p.preimage().addr == peer.addr {
+                *state = PeerState::Failed
+            }
+            break;
+        }
+        // TODO set failed in iter as well
+    }
+
+    pub(crate) fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
         // check for errors
         let remote = resp.key(&peer)?;
 
@@ -366,6 +374,7 @@ impl QueryStream {
             peers: self.inner.into_result(),
             inner: self.id,
             stats: self.stats,
+            cmd: self.cmd,
         }
     }
 }
@@ -447,6 +456,8 @@ pub struct QueryResult<TInner, TPeers> {
     pub peers: TPeers,
     /// The collected query statistics.
     pub stats: QueryStats,
+    /// The Command of the query.
+    pub cmd: Command,
 }
 
 /// Unique identifier for an active query.
