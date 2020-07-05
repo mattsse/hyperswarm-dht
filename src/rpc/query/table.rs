@@ -111,6 +111,16 @@ impl QueryTable {
             *state = PeerState::NotContacted;
         }
     }
+
+    pub(crate) fn into_result(self) -> impl Iterator<Item = (PeerId, Vec<u8>)> {
+        self.peers.into_iter().filter_map(|(peer, state)| {
+            if let PeerState::Succeeded { roundtrip_token } = state {
+                Some((peer.into_preimage(), roundtrip_token))
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /// Representation of a peer in the context of a iterator.

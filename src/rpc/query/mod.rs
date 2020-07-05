@@ -351,9 +351,18 @@ impl QueryStream {
         }
     }
 
-    // TODO tick call 5000?
+    // TODO tick call 5000s
     fn poll(&mut self, now: Instant) -> Poll<Option<QueryEvent>> {
         self.poll_iter()
+    }
+
+    /// Consumes the query, producing the final `QueryResult`.
+    pub fn into_result(self) -> QueryResult<QueryId, impl Iterator<Item = (PeerId, Vec<u8>)>> {
+        QueryResult {
+            peers: self.inner.into_result(),
+            inner: self.id,
+            stats: self.stats,
+        }
     }
 }
 
@@ -423,6 +432,16 @@ pub struct Query {
     pub target: Option<Vec<u8>>,
     /// the query/update payload decoded with the inputEncoding
     pub value: Option<Vec<u8>>,
+}
+
+/// The result of a `Query`.
+pub struct QueryResult<TInner, TPeers> {
+    /// The opaque inner query state.
+    pub inner: TInner,
+    /// The successfully contacted peers.
+    pub peers: TPeers,
+    /// The collected query statistics.
+    pub stats: QueryStats,
 }
 
 /// Unique identifier for an active query.
