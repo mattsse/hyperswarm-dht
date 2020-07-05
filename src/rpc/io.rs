@@ -466,6 +466,7 @@ pub enum IoHandlerEvent<TUserData> {
         msg: Message,
         peer: Peer,
         sent: Instant,
+        user_data: TUserData,
     },
     /// Error while decoding from socket
     InMessageErr { err: io::Error, peer: Peer },

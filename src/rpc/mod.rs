@@ -19,7 +19,7 @@ use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
 use crate::kbucket::K_VALUE;
-use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStream, QueryType};
+use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     kbucket::{Entry, Key, NodeStatus},
@@ -29,7 +29,7 @@ use crate::{
         io::{Io, IoHandlerEvent},
         message::Type,
         message::{Command, CommandCodec, Message},
-        query::{Query, QueryId, QueryPool},
+        query::{QueryCommand, QueryId, QueryPool},
     },
 };
 use std::borrow::Borrow;
@@ -101,6 +101,7 @@ impl DHT {
     /// Ping a remote
     pub fn ping(&mut self, peer: &Node) -> anyhow::Result<()> {
         unimplemented!()
+        // TODO submit query directly to io handler
         // self.io.query(
         //     Command::Ping,
         //     None,
@@ -135,7 +136,7 @@ impl DHT {
             .map(Key::new)
             .collect::<Vec<_>>();
 
-        self.queries.add(
+        self.queries.add_stream(
             cmd,
             peers,
             query_type,
@@ -164,7 +165,7 @@ impl DHT {
         id: &[u8],
         peer: Peer,
         roundtrip_token: Option<Vec<u8>>,
-        to: Option<Vec<u8>>,
+        to: Option<SocketAddr>,
     ) {
         let id = id.to_vec();
         let key = kbucket::Key::new(id);
@@ -282,7 +283,7 @@ impl DHT {
             // });
 
             if let Some(_) = msg.valid_target_key_bytes() {
-                let query = Query {
+                let query = QueryCommand {
                     ty,
                     command,
                     node: peer.clone(),
@@ -303,7 +304,7 @@ impl DHT {
     /// Eventually send a response.
     fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) {
         if let Some(id) = msg.valid_id() {
-            self.add_node(id, peer.clone(), None, msg.to.clone());
+            self.add_node(id, peer.clone(), None, msg.decode_to_peer());
         }
 
         if let Some(cmd) = msg.get_command() {
@@ -426,15 +427,28 @@ impl DHT {
                 // TODO delegate to querypool
             }
             IoHandlerEvent::RequestTimeout {
-                msg: _,
-                peer: _,
-                sent: _,
-            } => {}
+                msg,
+                peer,
+                sent,
+                user_data,
+            } => {
+
+                // TODO remove remote node
+                // TODO if not ping, remove peer from pool
+            }
         }
     }
 
     /// Handles a finished (i.e. successful) query.
     fn query_finished(&mut self, query: QueryStream) -> Option<DhtEvent> {
+        let result = query.into_result();
+
+        // add nodes to the table
+
+        for (peer, token, to) in result.peers {
+            // self.add_node()
+        }
+
         unimplemented!()
     }
 
@@ -461,6 +475,7 @@ impl Stream for DHT {
                 QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
                 QueryPoolState::Timeout(q) => {
                     if let Some(event) = pin.query_timeout(q) {
+                        // TODO timeout failed remote
                         // return Async::Ready(NetworkBehaviourAction::GenerateEvent(event))
                     }
                 }
@@ -518,9 +533,12 @@ impl Borrow<[u8]> for PeerId {
 
 #[derive(Debug, Clone)]
 pub struct Node {
+    /// Address of the peer.
     pub addr: SocketAddr,
+    /// last roundtrip token in a req/resp exchanged with the peer
     pub roundtrip_token: Option<Vec<u8>>,
-    pub to: Option<Vec<u8>>,
+    /// Decoded address of the `to` message field
+    pub to: Option<SocketAddr>,
 }
 
 impl Peer {
@@ -564,6 +582,14 @@ pub enum DhtEvent {
         /// room for the new peer, if any.
         old_peer: Option<PeerId>,
     },
+    QueryResult {
+        /// The ID of the query that finished.
+        id: QueryId,
+        /// The command of the executed query.
+        cmd: Command,
+        /// Execution statistics from the query.
+        stats: QueryStats,
+    },
 }
 
 pub type RequestResult = Result<RequestOk, RequestError>;
@@ -578,7 +604,7 @@ pub enum RequestOk {
     ///
     /// Custom commands are not automatically replied to and need to be answered manually
     CustomCommandRequest {
-        query: Query,
+        query: QueryCommand,
     },
 }
 

@@ -93,15 +93,28 @@ impl QueryTable {
         self.peers.insert(Key::new(peer), PeerState::NotContacted);
     }
 
-    pub(crate) fn add_verified(&mut self, key: Key<PeerId>, roundtrip_token: Vec<u8>) {
+    pub(crate) fn add_verified(
+        &mut self,
+        key: Key<PeerId>,
+        roundtrip_token: Vec<u8>,
+        to: Option<SocketAddr>,
+    ) {
         if key == self.id {
             return;
         }
         if let Some(prev) = self.peers.get_mut(&key) {
-            *prev = PeerState::Succeeded { roundtrip_token };
+            *prev = PeerState::Succeeded {
+                roundtrip_token,
+                to,
+            };
         } else {
-            self.peers
-                .insert(key, PeerState::Succeeded { roundtrip_token });
+            self.peers.insert(
+                key,
+                PeerState::Succeeded {
+                    roundtrip_token,
+                    to,
+                },
+            );
         }
     }
 
@@ -112,10 +125,14 @@ impl QueryTable {
         }
     }
 
-    pub(crate) fn into_result(self) -> impl Iterator<Item = (PeerId, Vec<u8>)> {
+    pub(crate) fn into_result(self) -> impl Iterator<Item = (PeerId, Vec<u8>, Option<SocketAddr>)> {
         self.peers.into_iter().filter_map(|(peer, state)| {
-            if let PeerState::Succeeded { roundtrip_token } = state {
-                Some((peer.into_preimage(), roundtrip_token))
+            if let PeerState::Succeeded {
+                roundtrip_token,
+                to,
+            } = state
+            {
+                Some((peer.into_preimage(), roundtrip_token, to))
             } else {
                 None
             }
@@ -152,7 +169,10 @@ pub(crate) enum PeerState {
     /// A successful result from the peer has been delivered.
     ///
     /// This is a final state, reached as a result of a call to `on_success`.
-    Succeeded { roundtrip_token: Vec<u8> },
+    Succeeded {
+        roundtrip_token: Vec<u8>,
+        to: Option<SocketAddr>,
+    },
 }
 
 impl PeerState {
@@ -172,7 +192,9 @@ impl PeerState {
 
     pub(crate) fn get_token(&self) -> Option<&Vec<u8>> {
         match self {
-            PeerState::Succeeded { roundtrip_token } => Some(roundtrip_token),
+            PeerState::Succeeded {
+                roundtrip_token, ..
+            } => Some(roundtrip_token),
             _ => None,
         }
     }

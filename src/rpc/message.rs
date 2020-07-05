@@ -11,7 +11,7 @@ use wasm_timer::Instant;
 use crate::kbucket;
 use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
-use crate::rpc::query::Query;
+use crate::rpc::query::QueryCommand;
 use crate::rpc::{Peer, PeerId, RequestId};
 use std::convert::TryFrom;
 
@@ -195,9 +195,9 @@ impl Type {
 pub trait CommandCodec:
     Encoder<Item = Vec<u8>, Error = io::Error> + Decoder<Item = Vec<u8>, Error = io::Error>
 {
-    fn update(&mut self, query: &Query) -> Result<Option<Vec<u8>>, String>;
+    fn update(&mut self, query: &QueryCommand) -> Result<Option<Vec<u8>>, String>;
 
-    fn query(&self, query: &Query) -> Result<Option<Vec<u8>>, String>;
+    fn query(&self, query: &QueryCommand) -> Result<Option<Vec<u8>>, String>;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

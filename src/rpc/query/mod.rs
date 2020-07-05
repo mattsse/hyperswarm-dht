@@ -45,7 +45,7 @@ impl QueryPool {
     }
 
     /// Adds a query to the pool.
-    pub fn add<T, I, S>(
+    pub fn add_stream<T, I, S>(
         &mut self,
         cmd: T,
         peers: I,
@@ -229,15 +229,17 @@ impl QueryStream {
                 self.inner.add_unverified(node);
             }
             if !self.ty.is_query() {
+                let to = resp.decode_to_peer();
                 if let Some(token) = resp.roundtrip_token {
-                    self.inner.add_verified(remote, token);
+                    self.inner.add_verified(remote, token, to);
                 }
                 return None;
             }
         }
 
         if let Some(token) = resp.roundtrip_token.take() {
-            self.inner.add_verified(remote.clone(), token);
+            self.inner
+                .add_verified(remote.clone(), token, resp.decode_to_peer());
         }
 
         Some(Response {
@@ -357,7 +359,9 @@ impl QueryStream {
     }
 
     /// Consumes the query, producing the final `QueryResult`.
-    pub fn into_result(self) -> QueryResult<QueryId, impl Iterator<Item = (PeerId, Vec<u8>)>> {
+    pub fn into_result(
+        self,
+    ) -> QueryResult<QueryId, impl Iterator<Item = (PeerId, Vec<u8>, Option<SocketAddr>)>> {
         QueryResult {
             peers: self.inner.into_result(),
             inner: self.id,
@@ -397,6 +401,7 @@ impl QueryType {
     }
 }
 
+#[derive(Debug)]
 pub enum QueryEvent {
     Query {
         peer: Peer,
@@ -420,7 +425,7 @@ pub enum QueryEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct Query {
+pub struct QueryCommand {
     /// Whether this a query/update response
     pub ty: Type,
     /// Command def
