@@ -4,7 +4,7 @@ use fnv::FnvHashMap;
 use futures::task::Poll;
 use wasm_timer::Instant;
 
-use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE};
+use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE};
 use crate::rpc::message::{Command, Message, Type};
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
@@ -21,11 +21,50 @@ mod table;
 pub struct QueryPool {
     local_id: Key<Vec<u8>>,
     queries: FnvHashMap<QueryId, QueryStream>,
+    config: QueryConfig,
     next_id: usize,
-    timeout: Duration,
+}
+
+/// The configuration for queries in a `QueryPool`.
+#[derive(Debug, Clone)]
+pub struct QueryConfig {
+    /// Timeout of a single query.
+    ///
+    /// See [`crate::behaviour::KademliaConfig::set_query_timeout`] for details.
+    pub timeout: Duration,
+
+    /// The replication factor to use.
+    ///
+    /// See [`crate::behaviour::KademliaConfig::set_replication_factor`] for details.
+    pub replication_factor: NonZeroUsize,
+
+    /// Allowed level of parallelism for iterative queries.
+    ///
+    /// See [`crate::behaviour::KademliaConfig::set_parallelism`] for details.
+    pub parallelism: NonZeroUsize,
+}
+
+impl Default for QueryConfig {
+    fn default() -> Self {
+        QueryConfig {
+            timeout: Duration::from_secs(60),
+            replication_factor: NonZeroUsize::new(K_VALUE.get()).expect("K_VALUE > 0"),
+            parallelism: ALPHA_VALUE,
+        }
+    }
 }
 
 impl QueryPool {
+    /// Creates a new `QueryPool` with the given configuration.
+    pub fn new(local_id: Key<Vec<u8>>, config: QueryConfig) -> Self {
+        Self {
+            local_id,
+            next_id: 0,
+            config,
+            queries: Default::default(),
+        }
+    }
+
     /// Returns an iterator over the queries in the pool.
     pub fn iter(&self) -> impl Iterator<Item = &QueryStream> {
         self.queries.values()
@@ -36,7 +75,7 @@ impl QueryPool {
         self.queries.len()
     }
 
-    fn next_query_id(&mut self) -> QueryId {
+    pub(crate) fn next_query_id(&mut self) -> QueryId {
         let id = QueryId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
         id
@@ -61,7 +100,7 @@ impl QueryPool {
         let query = QueryStream::bootstrap(
             id,
             cmd,
-            ALPHA_VALUE,
+            self.config.parallelism,
             query_type,
             self.local_id.clone(),
             target,
@@ -103,7 +142,7 @@ impl QueryPool {
                 }
                 Poll::Pending => {
                     let elapsed = now - query.stats.start.unwrap_or(now);
-                    if elapsed >= self.timeout {
+                    if elapsed >= self.config.timeout {
                         timeout = Some(query_id);
                         break;
                     }

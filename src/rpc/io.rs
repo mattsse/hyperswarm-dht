@@ -18,6 +18,7 @@ use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
 
+use crate::kbucket::Key;
 use crate::{
     kbucket::KeyBytes,
     peers::PeersEncoding,
@@ -90,8 +91,8 @@ impl<TUserData> MessageEvent<TUserData> {
 }
 
 // TODO merge this with the DHT struct
-pub struct Io<TUserData> {
-    id: GenericArray<u8, U32>,
+pub struct IoHandler<TUserData> {
+    id: Key<Vec<u8>>,
     socket: UdpFramed<DhtRpcCodec>,
     /// Messages to send
     pending_send: VecDeque<MessageEvent<TUserData>>,
@@ -101,19 +102,15 @@ pub struct Io<TUserData> {
     pending_recv: FnvHashMap<RequestId, Request<TUserData>>,
     secrets: ([u8; 32], [u8; 32]),
 
-    /// The TTL of regular (value-)records.
-    record_ttl: Option<Duration>,
-
-    /// The TTL of provider records.
-    provider_record_ttl: Option<Duration>,
-
     next_req_id: RequestId,
 
     rotation: Duration,
     last_rotation: Instant,
 }
 
-impl<TUserData> Io<TUserData> {
+pub struct IoConfig {}
+
+impl<TUserData> IoHandler<TUserData> {
     /// Generate the next request id
     fn next_req_id(&mut self) -> RequestId {
         let rid = self.next_req_id;
@@ -184,7 +181,7 @@ impl<TUserData> Io<TUserData> {
             r#type: Type::Query.id(),
             rid: self.next_req_id.0,
             to: Some(peer.encode()),
-            id: Some(self.id.as_slice().to_vec()),
+            id: Some(self.id.preimage().clone()),
             target,
             closer_nodes: None,
             roundtrip_token: None,
@@ -213,7 +210,7 @@ impl<TUserData> Io<TUserData> {
             r#type: Type::Response.id(),
             rid: request.rid,
             to: Some(peer.encode()),
-            id: Some(self.id.as_slice().to_vec()),
+            id: Some(self.id.preimage().clone()),
             target: None,
             closer_nodes,
             roundtrip_token: None,
@@ -237,7 +234,7 @@ impl<TUserData> Io<TUserData> {
             r#type: Type::Response.id(),
             rid: request.rid,
             to: Some(peer.encode()),
-            id: Some(self.id.as_slice().to_vec()),
+            id: Some(self.id.preimage().clone()),
             target: None,
             closer_nodes,
             roundtrip_token: Some(self.token(&peer, &self.secrets.0[..]).as_bytes().to_vec()),
@@ -265,7 +262,7 @@ impl<TUserData> Io<TUserData> {
             r#type: Type::Update.id(),
             rid: self.next_req_id.0,
             to: Some(peer.encode()),
-            id: Some(self.id.as_slice().to_vec()),
+            id: Some(self.id.preimage().clone()),
             target,
             closer_nodes: None,
             roundtrip_token,
@@ -368,7 +365,7 @@ impl<TUserData> Io<TUserData> {
     }
 }
 
-impl<TUserData: Unpin> Stream for Io<TUserData> {
+impl<TUserData: Unpin> Stream for IoHandler<TUserData> {
     type Item = IoHandlerEvent<TUserData>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

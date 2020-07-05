@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
@@ -19,14 +20,16 @@ use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
 use crate::kbucket::K_VALUE;
-use crate::rpc::query::{QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType};
+use crate::rpc::query::{
+    QueryConfig, QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType,
+};
 use crate::{
     kbucket::{self, KBucketsTable, KeyBytes},
     kbucket::{Entry, Key, NodeStatus},
     peers::decode_peers,
     peers::{PeersCodec, PeersEncoding},
     rpc::{
-        io::{Io, IoHandlerEvent},
+        io::{IoHandler, IoHandlerEvent},
         message::Type,
         message::{Command, CommandCodec, Message},
         query::{QueryCommand, QueryId, QueryPool},
@@ -40,37 +43,180 @@ pub mod message;
 pub mod protocol;
 pub mod query;
 
-pub struct DHT {
+pub struct Dht {
     id: Key<Vec<u8>>,
     query_id: Option<KeyBytes>,
     // TODO change Key to Key<PeerId>
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
-    ephemeral: bool,
-    io: Io<QueryId>,
-    ping_interval: Duration,
-
+    io: IoHandler<QueryId>,
+    ping_interval: Option<Duration>,
+    find_node_job: FindNodeJob,
     /// The currently active (i.e. in-progress) queries.
     queries: QueryPool,
-
-    /// The currently connected peers.
-    ///
-    /// This is a superset of the connected peers currently in the routing table.
-    connected_peers: FnvHashSet<Vec<u8>>,
-
     /// Custom commands
     // TODO support custom encoding?
     commands: HashSet<String>,
-
     /// Queued events to return when being polled.
     queued_events: VecDeque<DhtEvent>,
-
     /// Nodes to bootstrap from
     bootstrap_nodes: Vec<SocketAddr>,
-
     bootstrapped: bool,
 }
 
-impl DHT {
+pub struct DhtConfig {
+    kbucket_pending_timeout: Duration,
+    local_id: Option<Vec<u8>>,
+    commands: HashSet<String>,
+    query_config: QueryConfig,
+    find_node_replication_interval: Duration,
+    ping_interval: Option<Duration>,
+    connection_idle_timeout: Duration,
+    ephemeral: bool,
+    bootstrap_nodes: Vec<SocketAddr>,
+    socket: Option<UdpSocket>,
+}
+
+impl Default for DhtConfig {
+    fn default() -> Self {
+        DhtConfig {
+            kbucket_pending_timeout: Duration::from_secs(60),
+            local_id: None,
+            commands: Default::default(),
+            query_config: Default::default(),
+            ping_interval: Some(Duration::from_secs(60)),
+            find_node_replication_interval: Duration::from_millis(5000),
+            connection_idle_timeout: Duration::from_secs(10),
+            ephemeral: false,
+            bootstrap_nodes: vec![],
+            socket: None,
+        }
+    }
+}
+
+impl DhtConfig {
+    /// Set the id used to sign the messages explicitly.
+    pub fn set_local_id(&mut self, id: Vec<u8>) -> &mut Self {
+        self.local_id = Some(id);
+        self
+    }
+
+    pub fn bind<A: ToSocketAddrs>(
+        &mut self,
+        addr: A,
+    ) -> Result<&mut Self, (&mut Self, std::io::Error)> {
+        match UdpSocket::bind(addr) {
+            Ok(socket) => {
+                self.socket = Some(socket);
+                Ok(self)
+            }
+            Err(err) => Err((self, err)),
+        }
+    }
+
+    /// Sets the timeout for a single query.
+    ///
+    /// > **Note**: A single query usually comprises at least as many requests
+    /// > as the replication factor, i.e. this is not a request timeout.
+    ///
+    /// The default is 60 seconds.
+    pub fn set_query_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.query_config.timeout = timeout;
+        self
+    }
+
+    /// Sets the replication factor to use.
+    ///
+    /// The replication factor determines to how many closest peers
+    /// a record is replicated. The default is [`K_VALUE`].
+    pub fn set_replication_factor(&mut self, replication_factor: NonZeroUsize) -> &mut Self {
+        self.query_config.replication_factor = replication_factor;
+        self
+    }
+
+    /// Sets the allowed level of parallelism for iterative queries.
+    ///
+    /// The `α` parameter in the Kademlia paper. The maximum number of peers
+    /// that an iterative query is allowed to wait for in parallel while
+    /// iterating towards the closest nodes to a target. Defaults to
+    /// `ALPHA_VALUE`.
+    ///
+    /// This only controls the level of parallelism of an iterative query, not
+    /// the level of parallelism of a query to a fixed set of peers.
+    ///
+    /// When used with [`KademliaConfig::disjoint_query_paths`] it equals
+    /// the amount of disjoint paths used.
+    pub fn set_parallelism(&mut self, parallelism: NonZeroUsize) -> &mut Self {
+        self.query_config.parallelism = parallelism;
+        self
+    }
+
+    /// Sets the (re-)replication interval for `find_node` query.
+    pub fn find_node_replication_interval(&mut self, interval: Duration) -> &mut Self {
+        self.find_node_replication_interval = interval;
+        self
+    }
+
+    pub fn register_commands<T, I>(&mut self, cmds: I) -> &mut Self
+    where
+        I: Iterator<Item = T>,
+        T: ToString,
+    {
+        for cmd in cmds {
+            self.commands.insert(cmd.to_string());
+        }
+        self
+    }
+
+    /// Sets interval for a `ping` query.
+    pub fn ping_interval(&mut self, interval: Option<Duration>) -> &mut Self {
+        self.ping_interval = interval;
+        self
+    }
+
+    /// Set ephemeral: true so other peers do not add us to the peer list, simply bootstrap
+    pub fn ephemeral(&mut self) -> &mut Self {
+        self.ephemeral = true;
+        self
+    }
+
+    /// Set the nodes to bootstrap from
+    pub fn set_bootstrap_nodes<T: ToSocketAddrs>(&mut self, addresses: &[T]) -> &mut Self {
+        for addrs in addresses {
+            if let Ok(addrs) = addrs.to_socket_addrs() {
+                for addr in addrs {
+                    self.bootstrap_nodes.push(addr)
+                }
+            }
+        }
+        self
+    }
+}
+
+impl Dht {
+    /// Creates a new `Dht` network behaviour with the given configuration.
+    pub fn with_config(config: DhtConfig) -> Self {
+        let local_id = Key::new(config.local_id.unwrap_or_else(|| {
+            let mut local_key = [0u8; 32];
+            fill_random_bytes(&mut local_key);
+            local_key.to_vec()
+        }));
+
+        // Self {
+        //     id: local_id.clone(),
+        //     query_id: None,
+        //     kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
+        //     io: Io,
+        //     ping_interval: config.ping_interval,
+        //     queries: QueryPool::new(local_id, config.query_config),
+        //     commands: config.commands,
+        //     queued_events: Default::default(),
+        //     bootstrap_nodes: config.bootstrap_nodes,
+        //     bootstrapped: false
+        // }
+
+        unimplemented!()
+    }
+
     pub fn bootstrap(&mut self) {
         if !self.bootstrap_nodes.is_empty() {
             self.query(Command::FindNode, self.id.clone(), None);
@@ -99,15 +245,15 @@ impl DHT {
     }
 
     /// Ping a remote
-    pub fn ping(&mut self, peer: &Node) -> anyhow::Result<()> {
-        unimplemented!()
-        // TODO submit query directly to io handler
-        // self.io.query(
-        //     Command::Ping,
-        //     None,
-        //     Some(peer.id.to_vec()),
-        //     Peer::from(peer.addr),
-        // )
+    pub fn ping(&mut self, peer: &PeerId) {
+        self.io.query(
+            Command::Ping,
+            None,
+            Some(peer.id.clone()),
+            Peer::from(peer.addr),
+            // TODO refactor ping handling, no query id required
+            self.queries.next_query_id(),
+        )
     }
 
     fn reping(&mut self) {}
@@ -176,19 +322,13 @@ impl DHT {
                 n.addr = peer.addr;
             }
             Entry::Absent(entry) => {
-                let status = if self.connected_peers.contains(key.preimage()) {
-                    NodeStatus::Connected
-                } else {
-                    NodeStatus::Disconnected
-                };
-
                 let node = Node {
                     addr: peer.addr,
                     roundtrip_token,
                     to,
                 };
 
-                match entry.insert(node, status) {
+                match entry.insert(node, NodeStatus::Connected) {
                     kbucket::InsertResult::Inserted => {
                         self.queued_events.push_back(DhtEvent::RoutingUpdated {
                             peer: peer.clone(),
@@ -512,7 +652,7 @@ impl DHT {
     }
 }
 
-impl Stream for DHT {
+impl Stream for Dht {
     type Item = DhtEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -563,6 +703,9 @@ impl Stream for DHT {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+struct FindNodeJob {}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Peer {
@@ -701,4 +844,14 @@ pub enum ResponseOk {
 
 pub enum ResponseError {
     InvalidPong(Peer),
+}
+
+pub(crate) fn fill_random_bytes(dest: &mut [u8]) {
+    use rand::SeedableRng;
+    use rand::{
+        rngs::{OsRng, StdRng},
+        RngCore,
+    };
+    let mut rng = StdRng::from_rng(OsRng::default()).unwrap();
+    rng.fill_bytes(dest)
 }
