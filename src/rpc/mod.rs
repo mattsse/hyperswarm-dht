@@ -299,7 +299,6 @@ impl DHT {
             // .map(|val| {
             //     val.map(|val| {
             //         let mut bytes = BytesMut::with_capacity(val.len());
-            //         // TODO error handling
             //         cmd.encode(val, &mut bytes);
             //         bytes.to_vec()
             //     })
@@ -347,7 +346,6 @@ impl DHT {
                 return;
             }
             if let Some(key) = msg.valid_target_key_bytes() {
-                // TODO error handling
                 self.reply(
                     msg,
                     peer.clone(),
@@ -370,7 +368,6 @@ impl DHT {
             }
         }
 
-        // TODO error handling
         self.io
             .response(msg, Some(peer.encode()), None, peer.clone());
 
@@ -380,7 +377,6 @@ impl DHT {
     fn on_findnode(&mut self, msg: Message, peer: Peer) -> RequestResult {
         if let Some(key) = msg.valid_id_key_bytes() {
             let closer_nodes = self.closer_nodes(&key, 20);
-            // TODO error handling
             self.io
                 .response(msg, None, Some(closer_nodes), peer.clone());
         }

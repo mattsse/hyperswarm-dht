@@ -178,7 +178,7 @@ impl<TUserData> Io<TUserData> {
         value: Option<Vec<u8>>,
         peer: Peer,
         user_data: TUserData,
-    ) -> anyhow::Result<()> {
+    ) {
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Query.id(),
@@ -192,15 +192,12 @@ impl<TUserData> Io<TUserData> {
             error: None,
             value,
         };
-        Ok(self.send_to(MessageEvent::Query {
+
+        self.pending_send.push_back(MessageEvent::Query {
             msg,
             peer,
             user_data,
-        })?)
-    }
-
-    pub fn request(&mut self) {
-        unimplemented!()
+        })
     }
 
     pub fn error(
@@ -210,7 +207,7 @@ impl<TUserData> Io<TUserData> {
         value: Option<Vec<u8>>,
         closer_nodes: Option<Vec<u8>>,
         peer: Peer,
-    ) -> anyhow::Result<()> {
+    ) {
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Response.id(),
@@ -224,7 +221,8 @@ impl<TUserData> Io<TUserData> {
             error,
             value,
         };
-        Ok(self.send_to(MessageEvent::Response { msg, peer })?)
+        self.pending_send
+            .push_back(MessageEvent::Response { msg, peer })
     }
 
     pub fn response(
@@ -233,7 +231,7 @@ impl<TUserData> Io<TUserData> {
         value: Option<Vec<u8>>,
         closer_nodes: Option<Vec<u8>>,
         peer: Peer,
-    ) -> anyhow::Result<()> {
+    ) {
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Response.id(),
@@ -247,7 +245,8 @@ impl<TUserData> Io<TUserData> {
             error: None,
             value,
         };
-        Ok(self.send_to(MessageEvent::Response { msg, peer })?)
+        self.pending_send
+            .push_back(MessageEvent::Response { msg, peer })
     }
 
     /// Send an update message
@@ -259,7 +258,7 @@ impl<TUserData> Io<TUserData> {
         peer: Peer,
         roundtrip_token: Option<Vec<u8>>,
         user_data: TUserData,
-    ) -> anyhow::Result<()> {
+    ) {
         // TODO just push to queue
         let msg = Message {
             version: Some(VERSION),
@@ -274,11 +273,11 @@ impl<TUserData> Io<TUserData> {
             error: None,
             value,
         };
-        Ok(self.send_to(MessageEvent::Update {
+        self.pending_send.push_back(MessageEvent::Update {
             msg,
             peer,
             user_data,
-        })?)
+        })
     }
 
     fn on_response(&mut self, recv: Message, peer: Peer) -> IoHandlerEvent<TUserData> {
