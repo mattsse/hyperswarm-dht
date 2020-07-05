@@ -4,9 +4,9 @@ hyperswarm-dht
 [![Crates.io](https://img.shields.io/crates/v/hyperswarm-dht.svg)](https://crates.io/crates/hyperswarm-dht)
 [![Documentation](https://docs.rs/hyperswarm-dht/badge.svg)](https://docs.rs/hyperswarm-dht)
 
-A wip rust implementation of [hyperswarm-dht](https://github.com/hyperswarm/dht) - The DHT powering the HyperSwarm stack.
+A very wip rust implementation of [hyperswarm-dht](https://github.com/hyperswarm/dht) - The DHT powering the HyperSwarm stack.
 
-The Kademlia DHT implementation and is copied from [libp2-kad](https://github.com/libp2p/rust-libp2p).
+The Kademlia implementation and logic is copied from [libp2-kad](https://github.com/libp2p/rust-libp2p).
 
 ## Roadmap
 
