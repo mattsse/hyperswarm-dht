@@ -2,24 +2,27 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
+use tokio::net::UdpSocket;
+use tokio_util::udp::UdpFramed;
 
 use bytes::{Bytes, BytesMut};
 use fnv::FnvHashSet;
 use futures::{
-    pin_mut,
     stream::Stream,
     task::{Context, Poll},
-    TryStreamExt,
+    Future, TryStreamExt,
 };
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 
 use crate::kbucket::K_VALUE;
+use crate::rpc::io::IoConfig;
+use crate::rpc::protocol::DhtRpcCodec;
 use crate::rpc::query::{
     QueryConfig, QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType,
 };
@@ -36,7 +39,7 @@ use crate::{
     },
 };
 use std::borrow::Borrow;
-use wasm_timer::Instant;
+use wasm_timer::{Delay, Instant};
 
 pub mod io;
 pub mod message;
@@ -68,6 +71,7 @@ pub struct DhtConfig {
     local_id: Option<Vec<u8>>,
     commands: HashSet<String>,
     query_config: QueryConfig,
+    io_config: IoConfig,
     find_node_replication_interval: Duration,
     ping_interval: Option<Duration>,
     connection_idle_timeout: Duration,
@@ -89,6 +93,7 @@ impl Default for DhtConfig {
             ephemeral: false,
             bootstrap_nodes: vec![],
             socket: None,
+            io_config: Default::default(),
         }
     }
 }
@@ -100,17 +105,36 @@ impl DhtConfig {
         self
     }
 
-    pub fn bind<A: ToSocketAddrs>(
+    /// Use an existing UDP socket.
+    pub fn set_socket(&mut self, socket: UdpSocket) -> &mut Self {
+        self.socket = Some(socket);
+        self
+    }
+
+    /// Create a new UDP socket and attempt to bind it to the addr provided.
+    pub async fn bind<A: tokio::net::ToSocketAddrs>(
         &mut self,
         addr: A,
     ) -> Result<&mut Self, (&mut Self, std::io::Error)> {
-        match UdpSocket::bind(addr) {
+        match UdpSocket::bind(addr).await {
             Ok(socket) => {
                 self.socket = Some(socket);
                 Ok(self)
             }
             Err(err) => Err((self, err)),
         }
+    }
+
+    /// Set the secret keys to create roundtrip tokens
+    pub fn set_secrets(&mut self, secrets: ([u8; 32], [u8; 32])) -> &mut Self {
+        self.io_config.secrets = Some(secrets);
+        self
+    }
+
+    /// Set the key rotation interval to rotate the keys used to create roundtrip tokens
+    pub fn set_key_rotation_interval(&mut self, rotation: Duration) -> &mut Self {
+        self.io_config.rotation = Some(rotation);
+        self
     }
 
     /// Sets the timeout for a single query.
@@ -194,27 +218,40 @@ impl DhtConfig {
 
 impl Dht {
     /// Creates a new `Dht` network behaviour with the given configuration.
-    pub fn with_config(config: DhtConfig) -> Self {
+    ///
+    /// If no socket was created within then `DhtConfig`, a new socket at a random port will be created.
+    pub async fn with_config(config: DhtConfig) -> std::io::Result<Self> {
         let local_id = Key::new(config.local_id.unwrap_or_else(|| {
             let mut local_key = [0u8; 32];
             fill_random_bytes(&mut local_key);
             local_key.to_vec()
         }));
 
-        // Self {
-        //     id: local_id.clone(),
-        //     query_id: None,
-        //     kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
-        //     io: Io,
-        //     ping_interval: config.ping_interval,
-        //     queries: QueryPool::new(local_id, config.query_config),
-        //     commands: config.commands,
-        //     queued_events: Default::default(),
-        //     bootstrap_nodes: config.bootstrap_nodes,
-        //     bootstrapped: false
-        // }
+        let socket = if let Some(socket) = config.socket {
+            socket
+        } else {
+            UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(127, 0, 0, 1),
+                0,
+            )))
+            .await?
+        };
 
-        unimplemented!()
+        let io = IoHandler::new(local_id.clone(), socket, config.io_config);
+
+        Ok(Self {
+            id: local_id.clone(),
+            query_id: None,
+            kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
+            io,
+            ping_interval: config.ping_interval,
+            find_node_job: FindNodeJob::new(config.find_node_replication_interval),
+            queries: QueryPool::new(local_id, config.query_config),
+            commands: config.commands,
+            queued_events: Default::default(),
+            bootstrap_nodes: config.bootstrap_nodes,
+            bootstrapped: false,
+        })
     }
 
     pub fn bootstrap(&mut self) {
@@ -658,6 +695,10 @@ impl Stream for Dht {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
+        let delay = &mut pin.find_node_job.delay;
+
+        if let Poll::Ready(Ok(_)) = Delay::poll(Pin::new(delay), cx) {}
+
         loop {
             // Drain queued events first.
             if let Some(event) = pin.queued_events.pop_front() {
@@ -686,9 +727,7 @@ impl Stream for Dht {
 
             // Look for a sent/received message
             loop {
-                let io = &mut pin.io;
-                pin_mut!(io);
-                match Stream::poll_next(io, cx) {
+                match Stream::poll_next(Pin::new(&mut pin.io), cx) {
                     Poll::Ready(Some(event)) => pin.inject_event(event),
                     _ => break,
                 }
@@ -704,8 +743,20 @@ impl Stream for Dht {
     }
 }
 
-#[derive(Debug, Clone)]
-struct FindNodeJob {}
+#[derive(Debug)]
+struct FindNodeJob {
+    interval: Duration,
+    delay: Delay,
+}
+
+impl FindNodeJob {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            delay: Delay::new(interval),
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Peer {

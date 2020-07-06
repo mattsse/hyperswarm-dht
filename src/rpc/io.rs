@@ -19,6 +19,7 @@ use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
 
 use crate::kbucket::Key;
+use crate::rpc::fill_random_bytes;
 use crate::{
     kbucket::KeyBytes,
     peers::PeersEncoding,
@@ -108,9 +109,39 @@ pub struct IoHandler<TUserData> {
     last_rotation: Instant,
 }
 
-pub struct IoConfig {}
+#[derive(Debug, Clone, Default)]
+pub struct IoConfig {
+    pub rotation: Option<Duration>,
+    pub secrets: Option<([u8; 32], [u8; 32])>,
+}
 
 impl<TUserData> IoHandler<TUserData> {
+    pub fn new(id: Key<Vec<u8>>, socket: UdpSocket, config: IoConfig) -> IoHandler<TUserData> {
+        let socket = UdpFramed::new(socket, DhtRpcCodec::default());
+
+        let secrets = config.secrets.unwrap_or_else(|| {
+            let mut k1 = [0; 32];
+            let mut k2 = [0; 32];
+            fill_random_bytes(&mut k1);
+            fill_random_bytes(&mut k2);
+            (k1, k2)
+        });
+
+        Self {
+            id,
+            socket,
+            pending_send: Default::default(),
+            pending_flush: None,
+            pending_recv: Default::default(),
+            secrets,
+            next_req_id: RequestId(0),
+            rotation: config
+                .rotation
+                .unwrap_or_else(|| Duration::from_millis(300_000)),
+            last_rotation: Instant::now(),
+        }
+    }
+
     /// Generate the next request id
     fn next_req_id(&mut self) -> RequestId {
         let rid = self.next_req_id;
@@ -141,8 +172,7 @@ impl<TUserData> IoHandler<TUserData> {
             let mut buf = Vec::with_capacity(msg.encoded_len());
             msg.encode(&mut buf)?;
             let socket = &mut self.socket;
-            pin_mut!(socket);
-            Sink::start_send(socket, (buf, peer.addr.clone()))?;
+            Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr.clone()))?;
 
             self.pending_flush = Some(event);
         }
@@ -157,9 +187,7 @@ impl<TUserData> IoHandler<TUserData> {
             let (msg, peer) = event.inner();
             let mut buffer = Vec::with_capacity(msg.encoded_len());
             msg.encode(&mut buffer)?;
-            let socket = &mut self.socket;
-            pin_mut!(socket);
-            Sink::start_send(socket, (buffer, peer.addr.clone()))?;
+            Sink::start_send(Pin::new(&mut self.socket), (buffer, peer.addr.clone()))?;
             self.pending_flush = Some(event);
         } else {
             self.pending_send.push_back(event);
@@ -375,9 +403,7 @@ impl<TUserData: Unpin> Stream for IoHandler<TUserData> {
 
         // flush pending send
         if let Some(ev) = pin.pending_flush.take() {
-            let socket = &mut pin.socket;
-            pin_mut!(socket);
-            if Sink::poll_ready(socket, cx).is_ready() {
+            if Sink::poll_ready(Pin::new(&mut pin.socket), cx).is_ready() {
                 // TODO handle error
                 pin.send_next_pending();
 
@@ -418,9 +444,7 @@ impl<TUserData: Unpin> Stream for IoHandler<TUserData> {
         }
 
         // read from socket
-        let socket = &mut pin.socket;
-        pin_mut!(socket);
-        match Stream::poll_next(socket, cx) {
+        match Stream::poll_next(Pin::new(&mut pin.socket), cx) {
             Poll::Ready(Some(Ok((msg, rinfo)))) => {
                 if let Some(event) = pin.on_message(msg, rinfo) {
                     return Poll::Ready(Some(event));

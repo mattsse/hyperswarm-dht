@@ -7,6 +7,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::rpc::message::Message;
 
 /// Gossip codec for the framing
+#[derive(Debug, Clone, Default)]
 pub(crate) struct DhtRpcCodec;
 
 impl Decoder for DhtRpcCodec {
