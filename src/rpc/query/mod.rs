@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use fnv::FnvHashMap;
 use futures::task::Poll;
@@ -10,8 +12,6 @@ use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::query::peers::PeersIterState;
 use crate::rpc::query::table::{PeerState, QueryTable};
 use crate::rpc::{Node, Peer, PeerId, RequestId, Response, ResponseResult};
-use std::num::NonZeroUsize;
-use std::time::Duration;
 
 mod fixed;
 mod peers;

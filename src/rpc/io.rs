@@ -1,4 +1,3 @@
-use log::debug;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
@@ -14,6 +13,7 @@ use futures::{
     task::{Context, Poll},
     Sink,
 };
+use log::debug;
 use prost::Message as ProtoMessage;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::{net::UdpSocket, stream::Stream};

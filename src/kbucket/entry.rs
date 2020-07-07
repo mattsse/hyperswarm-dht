@@ -21,10 +21,10 @@
 //! The `Entry` API for quering and modifying the entries of a `KBucketsTable`
 //! representing the nodes participating in the Kademlia DHT.
 
-pub use super::bucket::{AppliedPending, InsertResult, Node, NodeStatus};
-pub use super::key::*;
 use crate::kbucket::K_VALUE;
 
+pub use super::bucket::{AppliedPending, InsertResult, Node, NodeStatus};
+pub use super::key::*;
 use super::*;
 
 /// An immutable by-reference view of a bucket entry.

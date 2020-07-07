@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Formatter;
 use std::io;
@@ -13,7 +14,6 @@ use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::QueryCommand;
 use crate::rpc::{Peer, PeerId, RequestId};
-use std::convert::TryFrom;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {

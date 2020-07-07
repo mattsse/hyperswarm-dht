@@ -18,10 +18,11 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use sha2::{Digest, Sha256};
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
+
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
+use sha2::{Digest, Sha256};
 use uint::*;
 
 construct_uint! {

@@ -1,12 +1,14 @@
+use std::collections::btree_map::{BTreeMap, Entry};
+use std::net::SocketAddr;
+use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
+
+use fnv::FnvHashMap;
+use wasm_timer::Instant;
+
 use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
 use crate::rpc::message::Message;
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::{self, PeerId};
-use fnv::FnvHashMap;
-use std::collections::btree_map::{BTreeMap, Entry};
-use std::net::SocketAddr;
-use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
-use wasm_timer::Instant;
 
 #[derive(Debug)]
 pub struct QueryTable {

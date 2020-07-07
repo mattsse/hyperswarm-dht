@@ -1,5 +1,6 @@
 //! Make RPC calls over a Kademlia based DHT.
 
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
@@ -7,8 +8,6 @@ use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio_util::udp::UdpFramed;
 
 use bytes::{Bytes, BytesMut};
 use fnv::FnvHashSet;
@@ -19,6 +18,9 @@ use futures::{
 };
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
+use tokio::net::UdpSocket;
+use tokio_util::udp::UdpFramed;
+use wasm_timer::{Delay, Instant};
 
 use crate::kbucket::K_VALUE;
 use crate::rpc::io::IoConfig;
@@ -38,8 +40,6 @@ use crate::{
         query::{QueryCommand, QueryId, QueryPool},
     },
 };
-use std::borrow::Borrow;
-use wasm_timer::{Delay, Instant};
 
 pub mod io;
 pub mod message;
