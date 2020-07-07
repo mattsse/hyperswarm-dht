@@ -24,7 +24,7 @@ impl Encoder<Vec<u8>> for DhtRpcCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.copy_from_slice(&item);
+        dst.extend_from_slice(&item);
         Ok(())
     }
 }

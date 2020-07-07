@@ -48,7 +48,7 @@ pub mod query;
 
 pub struct Dht {
     id: Key<Vec<u8>>,
-    query_id: Option<KeyBytes>,
+    query_id: Option<Key<Vec<u8>>>,
     // TODO change Key to Key<PeerId>
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
     io: IoHandler<QueryId>,
@@ -66,6 +66,7 @@ pub struct Dht {
     bootstrapped: bool,
 }
 
+#[derive(Debug)]
 pub struct DhtConfig {
     kbucket_pending_timeout: Duration,
     local_id: Option<Vec<u8>>,
@@ -88,7 +89,7 @@ impl Default for DhtConfig {
             commands: Default::default(),
             query_config: Default::default(),
             ping_interval: Some(Duration::from_secs(60)),
-            find_node_replication_interval: Duration::from_millis(5000),
+            find_node_replication_interval: Duration::from_millis(5_000),
             connection_idle_timeout: Duration::from_secs(10),
             ephemeral: false,
             bootstrap_nodes: vec![],
@@ -100,22 +101,22 @@ impl Default for DhtConfig {
 
 impl DhtConfig {
     /// Set the id used to sign the messages explicitly.
-    pub fn set_local_id(&mut self, id: Vec<u8>) -> &mut Self {
+    pub fn set_local_id(mut self, id: Vec<u8>) -> Self {
         self.local_id = Some(id);
         self
     }
 
     /// Use an existing UDP socket.
-    pub fn set_socket(&mut self, socket: UdpSocket) -> &mut Self {
+    pub fn set_socket(mut self, socket: UdpSocket) -> Self {
         self.socket = Some(socket);
         self
     }
 
     /// Create a new UDP socket and attempt to bind it to the addr provided.
     pub async fn bind<A: tokio::net::ToSocketAddrs>(
-        &mut self,
+        mut self,
         addr: A,
-    ) -> Result<&mut Self, (&mut Self, std::io::Error)> {
+    ) -> Result<Self, (Self, std::io::Error)> {
         match UdpSocket::bind(addr).await {
             Ok(socket) => {
                 self.socket = Some(socket);
@@ -126,13 +127,13 @@ impl DhtConfig {
     }
 
     /// Set the secret keys to create roundtrip tokens
-    pub fn set_secrets(&mut self, secrets: ([u8; 32], [u8; 32])) -> &mut Self {
+    pub fn set_secrets(mut self, secrets: ([u8; 32], [u8; 32])) -> Self {
         self.io_config.secrets = Some(secrets);
         self
     }
 
     /// Set the key rotation interval to rotate the keys used to create roundtrip tokens
-    pub fn set_key_rotation_interval(&mut self, rotation: Duration) -> &mut Self {
+    pub fn set_key_rotation_interval(mut self, rotation: Duration) -> Self {
         self.io_config.rotation = Some(rotation);
         self
     }
@@ -143,7 +144,7 @@ impl DhtConfig {
     /// > as the replication factor, i.e. this is not a request timeout.
     ///
     /// The default is 60 seconds.
-    pub fn set_query_timeout(&mut self, timeout: Duration) -> &mut Self {
+    pub fn set_query_timeout(mut self, timeout: Duration) -> Self {
         self.query_config.timeout = timeout;
         self
     }
@@ -152,7 +153,7 @@ impl DhtConfig {
     ///
     /// The replication factor determines to how many closest peers
     /// a record is replicated. The default is [`K_VALUE`].
-    pub fn set_replication_factor(&mut self, replication_factor: NonZeroUsize) -> &mut Self {
+    pub fn set_replication_factor(mut self, replication_factor: NonZeroUsize) -> Self {
         self.query_config.replication_factor = replication_factor;
         self
     }
@@ -169,18 +170,18 @@ impl DhtConfig {
     ///
     /// When used with [`KademliaConfig::disjoint_query_paths`] it equals
     /// the amount of disjoint paths used.
-    pub fn set_parallelism(&mut self, parallelism: NonZeroUsize) -> &mut Self {
+    pub fn set_parallelism(mut self, parallelism: NonZeroUsize) -> Self {
         self.query_config.parallelism = parallelism;
         self
     }
 
     /// Sets the (re-)replication interval for `find_node` query.
-    pub fn find_node_replication_interval(&mut self, interval: Duration) -> &mut Self {
+    pub fn find_node_replication_interval(mut self, interval: Duration) -> Self {
         self.find_node_replication_interval = interval;
         self
     }
 
-    pub fn register_commands<T, I>(&mut self, cmds: I) -> &mut Self
+    pub fn register_commands<T, I>(mut self, cmds: I) -> Self
     where
         I: Iterator<Item = T>,
         T: ToString,
@@ -192,19 +193,19 @@ impl DhtConfig {
     }
 
     /// Sets interval for a `ping` query.
-    pub fn ping_interval(&mut self, interval: Option<Duration>) -> &mut Self {
+    pub fn ping_interval(mut self, interval: Option<Duration>) -> Self {
         self.ping_interval = interval;
         self
     }
 
     /// Set ephemeral: true so other peers do not add us to the peer list, simply bootstrap
-    pub fn ephemeral(&mut self) -> &mut Self {
+    pub fn ephemeral(mut self) -> Self {
         self.ephemeral = true;
         self
     }
 
     /// Set the nodes to bootstrap from
-    pub fn set_bootstrap_nodes<T: ToSocketAddrs>(&mut self, addresses: &[T]) -> &mut Self {
+    pub fn set_bootstrap_nodes<T: ToSocketAddrs>(mut self, addresses: &[T]) -> Self {
         for addrs in addresses {
             if let Ok(addrs) = addrs.to_socket_addrs() {
                 for addr in addrs {
@@ -227,6 +228,12 @@ impl Dht {
             local_key.to_vec()
         }));
 
+        let query_id = if config.ephemeral {
+            None
+        } else {
+            Some(local_id.clone())
+        };
+
         let socket = if let Some(socket) = config.socket {
             socket
         } else {
@@ -241,7 +248,7 @@ impl Dht {
 
         Ok(Self {
             id: local_id.clone(),
-            query_id: None,
+            query_id,
             kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
             io,
             ping_interval: config.ping_interval,
@@ -256,6 +263,7 @@ impl Dht {
 
     pub fn bootstrap(&mut self) {
         if !self.bootstrap_nodes.is_empty() {
+            debug!("bootstrapped query submitted");
             self.query(Command::FindNode, self.id.clone(), None);
         }
         self.bootstrapped = true;
@@ -697,9 +705,12 @@ impl Stream for Dht {
 
         let delay = &mut pin.find_node_job.delay;
 
-        if let Poll::Ready(Ok(_)) = Delay::poll(Pin::new(delay), cx) {}
+        if let Poll::Ready(Ok(_)) = Delay::poll(Pin::new(delay), cx) {
+            //pin.bootstrap();
+        }
 
         loop {
+            debug!("Draining events");
             // Drain queued events first.
             if let Some(event) = pin.queued_events.pop_front() {
                 return Poll::Ready(Some(event));
@@ -727,6 +738,7 @@ impl Stream for Dht {
 
             // Look for a sent/received message
             loop {
+                debug!("polling io handler");
                 match Stream::poll_next(Pin::new(&mut pin.io), cx) {
                     Poll::Ready(Some(event)) => pin.inject_event(event),
                     _ => break,
@@ -737,6 +749,7 @@ impl Stream for Dht {
             // If no new events have been queued either, signal `Pending` to
             // be polled again later.
             if pin.queued_events.is_empty() {
+                debug!("empty events --> pending");
                 return Poll::Pending;
             }
         }
@@ -823,6 +836,7 @@ pub struct Response {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct RequestId(pub(crate) u64);
 
+#[derive(Debug)]
 pub enum DhtEvent {
     RequestResult(RequestResult),
     ResponseResult(ResponseResult),
@@ -847,6 +861,7 @@ pub enum DhtEvent {
 
 pub type RequestResult = Result<RequestOk, RequestError>;
 
+#[derive(Debug)]
 pub enum RequestOk {
     Responded {
         peer: Peer,
@@ -861,6 +876,7 @@ pub enum RequestOk {
     },
 }
 
+#[derive(Debug)]
 pub enum RequestError {
     UnsupportedCommand {
         command: String,
@@ -888,11 +904,13 @@ pub enum RequestError {
 
 pub type ResponseResult = Result<ResponseOk, ResponseError>;
 
+#[derive(Debug)]
 pub enum ResponseOk {
     Pong(Peer),
     Response(Response),
 }
 
+#[derive(Debug)]
 pub enum ResponseError {
     InvalidPong(Peer),
 }

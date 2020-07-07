@@ -27,8 +27,8 @@ impl PeersEncoding for &[Peer] {
         for peer in self.iter() {
             // TODO what to do with IPV6?
             if let IpAddr::V4(ip) = peer.addr.ip() {
-                buf.copy_from_slice(&ip.octets()[..]);
-                buf.copy_from_slice(&peer.addr.port().to_be_bytes()[..]);
+                buf.extend_from_slice(&ip.octets()[..]);
+                buf.extend_from_slice(&peer.addr.port().to_be_bytes()[..]);
             }
         }
         buf
@@ -42,7 +42,8 @@ fn decode_addr(peer: &[u8]) -> Option<SocketAddr> {
 
     let octects: [u8; 4] = peer[0..4].try_into().unwrap();
     let ip = Ipv4Addr::from(octects);
-    let port = u16::from_be_bytes(peer[5..6].try_into().unwrap());
+    let port: [u8; 2] = peer[4..6].try_into().unwrap();
+    let port = u16::from_be_bytes(port);
     Some(SocketAddr::V4(SocketAddrV4::new(ip, port)))
 }
 
@@ -95,9 +96,9 @@ impl PeersEncoding for Vec<EntryView<kbucket::Key<Vec<u8>>, Node>> {
         for peer in self.iter() {
             let addr = &peer.node.value.addr;
             if let IpAddr::V4(ip) = addr.ip() {
-                buf.copy_from_slice(&peer.node.key.preimage());
-                buf.copy_from_slice(&ip.octets()[..]);
-                buf.copy_from_slice(&addr.port().to_be_bytes()[..]);
+                buf.extend_from_slice(&peer.node.key.preimage());
+                buf.extend_from_slice(&ip.octets()[..]);
+                buf.extend_from_slice(&addr.port().to_be_bytes()[..]);
             }
         }
         buf
@@ -109,8 +110,8 @@ impl PeersEncoding for Peer {
         let mut buf = Vec::with_capacity(6);
         // TODO what to do with IPV6?
         if let IpAddr::V4(ip) = self.addr.ip() {
-            buf.copy_from_slice(&ip.octets()[..]);
-            buf.copy_from_slice(&self.addr.port().to_be_bytes()[..]);
+            buf.extend_from_slice(&ip.octets()[..]);
+            buf.extend_from_slice(&self.addr.port().to_be_bytes()[..]);
         }
         buf
     }
