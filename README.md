@@ -10,9 +10,10 @@ The Kademlia implementation and logic is copied from [libp2-kad](https://github.
 
 ## Roadmap
 
-* [ ] finish dht-rpc implementation
+* [x] dht-rpc implementation
 * [ ] dht-rpc api fine tuning and testing
 * [ ] hyperswarm-dht implementation
+* [ ] hyperswarm-dht cli
 
 ## References
 
