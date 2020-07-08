@@ -107,11 +107,17 @@ impl PeersEncoding for Vec<EntryView<kbucket::Key<Vec<u8>>, Node>> {
 
 impl PeersEncoding for Peer {
     fn encode(&self) -> Vec<u8> {
+        self.addr.encode()
+    }
+}
+
+impl PeersEncoding for SocketAddr {
+    fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(6);
         // TODO what to do with IPV6?
-        if let IpAddr::V4(ip) = self.addr.ip() {
+        if let IpAddr::V4(ip) = self.ip() {
             buf.extend_from_slice(&ip.octets()[..]);
-            buf.extend_from_slice(&self.addr.port().to_be_bytes()[..]);
+            buf.extend_from_slice(&self.port().to_be_bytes()[..]);
         }
         buf
     }
