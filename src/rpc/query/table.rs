@@ -127,18 +127,8 @@ impl QueryTable {
         }
     }
 
-    pub(crate) fn into_result(self) -> impl Iterator<Item = (PeerId, Vec<u8>, Option<SocketAddr>)> {
-        self.peers.into_iter().filter_map(|(peer, state)| {
-            if let PeerState::Succeeded {
-                roundtrip_token,
-                to,
-            } = state
-            {
-                Some((peer.into_preimage(), roundtrip_token, to))
-            } else {
-                None
-            }
-        })
+    pub(crate) fn into_result(self) -> impl Iterator<Item = (PeerId, PeerState)> {
+        self.peers.into_iter().map(|(k, v)| (k.into_preimage(), v))
     }
 }
 
@@ -157,7 +147,7 @@ impl Peer {
 
 /// The state of a single `Peer`.
 #[derive(Debug, Clone)]
-pub(crate) enum PeerState {
+pub enum PeerState {
     /// The peer has not yet been contacted.
     ///
     /// This is the starting state for every peer.

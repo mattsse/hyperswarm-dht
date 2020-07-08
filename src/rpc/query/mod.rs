@@ -4,18 +4,23 @@ use std::time::Duration;
 
 use fnv::FnvHashMap;
 use futures::task::Poll;
+use log::debug;
 use wasm_timer::Instant;
 
-use crate::kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE};
-use crate::rpc::message::{Command, Message, Type};
-use crate::rpc::query::fixed::FixedPeersIter;
-use crate::rpc::query::peers::PeersIterState;
-use crate::rpc::query::table::{PeerState, QueryTable};
-use crate::rpc::{Node, Peer, PeerId, RequestId, Response, ResponseResult};
+use crate::{
+    kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE},
+    rpc::{
+        message::{Command, Message, Type},
+        query::fixed::FixedPeersIter,
+        query::peers::PeersIterState,
+        query::table::{PeerState, QueryTable},
+        Node, Peer, PeerId, RequestId, Response, ResponseResult,
+    },
+};
 
 mod fixed;
 mod peers;
-mod table;
+pub mod table;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 pub struct QueryPool {
@@ -71,8 +76,12 @@ impl QueryPool {
     }
 
     /// Gets the current size of the pool, i.e. the number of running queries.
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.queries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queries.is_empty()
     }
 
     pub(crate) fn next_query_id(&mut self) -> QueryId {
@@ -128,6 +137,7 @@ impl QueryPool {
         let mut timeout = None;
         let mut waiting = None;
 
+        debug!("queries len {} ", self.queries.len());
         for (&query_id, query) in self.queries.iter_mut() {
             query.stats.start = query.stats.start.or(Some(now));
             match query.poll(now) {
@@ -255,9 +265,10 @@ impl QueryStream {
             }
             break;
         }
-        // TODO set failed in iter as well
+        self.peer_iter.on_failure(&peer);
     }
 
+    /// Received a response to a requested driven by this query.
     pub(crate) fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
         // check for errors
         let remote = resp.key(&peer)?;
@@ -267,9 +278,12 @@ impl QueryStream {
             if let Some(state) = self.inner.peers_mut().get_mut(&remote) {
                 *state = PeerState::Failed;
             }
+            self.peer_iter.on_failure(&peer);
             // TODO return error?
             return None;
         }
+
+        self.peer_iter.on_success(&peer);
 
         if let QueryPeerIter::MovingCloser(_) = self.peer_iter {
             for node in resp.decode_closer_nodes() {
@@ -400,15 +414,12 @@ impl QueryStream {
         }
     }
 
-    // TODO tick call 5000s
     fn poll(&mut self, now: Instant) -> Poll<Option<QueryEvent>> {
         self.poll_iter()
     }
 
     /// Consumes the query, producing the final `QueryResult`.
-    pub fn into_result(
-        self,
-    ) -> QueryResult<QueryId, impl Iterator<Item = (PeerId, Vec<u8>, Option<SocketAddr>)>> {
+    pub fn into_result(self) -> QueryResult<QueryId, impl Iterator<Item = (PeerId, PeerState)>> {
         QueryResult {
             peers: self.inner.into_result(),
             inner: self.id,
@@ -424,6 +435,24 @@ enum QueryPeerIter {
     Bootstrap(FixedPeersIter),
     MovingCloser(FixedPeersIter),
     Updating(FixedPeersIter),
+}
+
+impl QueryPeerIter {
+    fn on_success(&mut self, peer: &Peer) -> bool {
+        match self {
+            QueryPeerIter::Bootstrap(iter) => iter.on_success(peer),
+            QueryPeerIter::MovingCloser(iter) => iter.on_success(peer),
+            QueryPeerIter::Updating(iter) => iter.on_success(peer),
+        }
+    }
+
+    fn on_failure(&mut self, peer: &Peer) -> bool {
+        match self {
+            QueryPeerIter::Bootstrap(iter) => iter.on_failure(peer),
+            QueryPeerIter::MovingCloser(iter) => iter.on_failure(peer),
+            QueryPeerIter::Updating(iter) => iter.on_failure(peer),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
