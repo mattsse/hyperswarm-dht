@@ -22,17 +22,17 @@ use tokio::net::UdpSocket;
 use tokio_util::udp::UdpFramed;
 use wasm_timer::{Delay, Instant};
 
-use crate::kbucket::K_VALUE;
-use crate::rpc::io::IoConfig;
-use crate::rpc::protocol::DhtRpcCodec;
-use crate::rpc::query::{
-    QueryConfig, QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType,
-};
+use crate::rpc::io::{MessageEvent, VERSION};
+use crate::rpc::jobs::PeriodicJob;
+use crate::rpc::message::Holepunch;
 use crate::{
-    kbucket::{self, KBucketsTable, KeyBytes},
-    kbucket::{Entry, Key, NodeStatus},
+    kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
     peers::decode_peers,
     peers::{PeersCodec, PeersEncoding},
+    rpc::io::IoConfig,
+    rpc::protocol::DhtRpcCodec,
+    rpc::query::table::PeerState,
+    rpc::query::{QueryConfig, QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType},
     rpc::{
         io::{IoHandler, IoHandlerEvent},
         message::Type,
@@ -42,6 +42,7 @@ use crate::{
 };
 
 pub mod io;
+mod jobs;
 pub mod message;
 pub mod protocol;
 pub mod query;
@@ -52,8 +53,8 @@ pub struct Dht {
     // TODO change Key to Key<PeerId>
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
     io: IoHandler<QueryId>,
-    ping_interval: Option<Duration>,
-    find_node_job: FindNodeJob,
+    bootstrap_job: PeriodicJob,
+    ping_job: PeriodicJob,
     /// The currently active (i.e. in-progress) queries.
     queries: QueryPool,
     /// Custom commands
@@ -73,8 +74,8 @@ pub struct DhtConfig {
     commands: HashSet<String>,
     query_config: QueryConfig,
     io_config: IoConfig,
-    find_node_replication_interval: Duration,
-    ping_interval: Option<Duration>,
+    bootstrap_interval: Duration,
+    ping_interval: Duration,
     connection_idle_timeout: Duration,
     ephemeral: bool,
     bootstrap_nodes: Vec<SocketAddr>,
@@ -88,8 +89,8 @@ impl Default for DhtConfig {
             local_id: None,
             commands: Default::default(),
             query_config: Default::default(),
-            ping_interval: Some(Duration::from_secs(60)),
-            find_node_replication_interval: Duration::from_millis(5_000),
+            ping_interval: Duration::from_secs(40),
+            bootstrap_interval: Duration::from_secs(320),
             connection_idle_timeout: Duration::from_secs(10),
             ephemeral: false,
             bootstrap_nodes: vec![],
@@ -175,9 +176,9 @@ impl DhtConfig {
         self
     }
 
-    /// Sets the (re-)replication interval for `find_node` query.
-    pub fn find_node_replication_interval(mut self, interval: Duration) -> Self {
-        self.find_node_replication_interval = interval;
+    /// Sets the (re-)replication interval for `bootstrap` query.
+    pub fn bootstrap_interval(mut self, interval: Duration) -> Self {
+        self.bootstrap_interval = interval;
         self
     }
 
@@ -193,12 +194,14 @@ impl DhtConfig {
     }
 
     /// Sets interval for a `ping` query.
-    pub fn ping_interval(mut self, interval: Option<Duration>) -> Self {
+    pub fn ping_interval(mut self, interval: Duration) -> Self {
         self.ping_interval = interval;
         self
     }
 
-    /// Set ephemeral: true so other peers do not add us to the peer list, simply bootstrap
+    /// Set ephemeral: true so other peers do not add us to the peer list, simply bootstrap.
+    ///
+    /// An ephemeral dht node won't expose its id to remote peers, hence being ignored.
     pub fn ephemeral(mut self) -> Self {
         self.ephemeral = true;
         self
@@ -244,15 +247,15 @@ impl Dht {
             .await?
         };
 
-        let io = IoHandler::new(local_id.clone(), socket, config.io_config);
+        let io = IoHandler::new(query_id.clone(), socket, config.io_config);
 
         Ok(Self {
             id: local_id.clone(),
             query_id,
             kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
             io,
-            ping_interval: config.ping_interval,
-            find_node_job: FindNodeJob::new(config.find_node_replication_interval),
+            bootstrap_job: PeriodicJob::new(config.bootstrap_interval),
+            ping_job: PeriodicJob::new(config.ping_interval),
             queries: QueryPool::new(local_id, config.query_config),
             commands: config.commands,
             queued_events: Default::default(),
@@ -263,7 +266,6 @@ impl Dht {
 
     pub fn bootstrap(&mut self) {
         if !self.bootstrap_nodes.is_empty() {
-            debug!("bootstrapped query submitted");
             self.query(Command::FindNode, self.id.clone(), None);
         }
         self.bootstrapped = true;
@@ -285,8 +287,8 @@ impl Dht {
     }
 
     #[inline]
-    pub fn address(&self) -> &SocketAddr {
-        self.io.address()
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.io.local_addr()
     }
 
     /// Ping a remote
@@ -301,6 +303,29 @@ impl Dht {
         )
     }
 
+    fn ping_some(&mut self) {
+        let cnt = if self.queries.len() > 2 { 3 } else { 5 };
+        let now = Instant::now();
+        for peer in self
+            .kbuckets
+            .iter()
+            .filter_map(|entry| {
+                if now > entry.node.value.next_ping {
+                    Some(PeerId::new(
+                        entry.node.value.addr,
+                        entry.node.key.preimage().clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .take(cnt)
+            .collect::<Vec<_>>()
+        {
+            self.ping(&peer)
+        }
+    }
+
     fn reping(&mut self) {}
 
     pub fn query_and_update(
@@ -308,7 +333,7 @@ impl Dht {
         cmd: impl Into<Command>,
         target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
-    ) {
+    ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::QueryUpdate)
     }
 
@@ -318,7 +343,7 @@ impl Dht {
         target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
         query_type: QueryType,
-    ) {
+    ) -> QueryId {
         let peers = self
             .kbuckets
             .closest(&target)
@@ -334,20 +359,34 @@ impl Dht {
             target,
             value,
             self.bootstrap_nodes.iter().cloned().map(Peer::from),
-        );
+        )
     }
 
-    pub fn query(&mut self, cmd: impl Into<Command>, target: Key<Vec<u8>>, value: Option<Vec<u8>>) {
+    pub fn holepunch(&mut self, peer: Peer) -> bool {
+        if peer.referrer.is_some() {
+            let id = self.queries.next_query_id();
+            self.io.query(Command::Holepunch, None, None, peer, id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn query(
+        &mut self,
+        cmd: impl Into<Command>,
+        target: Key<Vec<u8>>,
+        value: Option<Vec<u8>>,
+    ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::Query)
     }
 
-    // TODO return query id to track?
     pub fn update(
         &mut self,
         cmd: impl Into<Command>,
         target: Key<Vec<u8>>,
         value: Option<Vec<u8>>,
-    ) {
+    ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::Update)
     }
 
@@ -361,16 +400,20 @@ impl Dht {
         let id = id.to_vec();
         let key = kbucket::Key::new(id);
         match self.kbuckets.entry(&key) {
-            Entry::Present(_, _) => {}
+            Entry::Present(mut entry, _) => {
+                entry.value().next_ping = Instant::now() + self.ping_job.interval;
+            }
             Entry::Pending(mut entry, _) => {
                 let n = entry.value();
                 n.addr = peer.addr;
+                n.next_ping = Instant::now() + self.ping_job.interval;
             }
             Entry::Absent(entry) => {
                 let node = Node {
                     addr: peer.addr,
                     roundtrip_token,
                     to,
+                    next_ping: Instant::now() + self.ping_job.interval,
                 };
 
                 match entry.insert(node, NodeStatus::Connected) {
@@ -434,13 +477,25 @@ impl Dht {
 
     /// Handle a response for our Ping command
     fn on_pong(&mut self, msg: Message, peer: Peer) {
-        if let Some(to) = msg.to.as_ref().or(msg.value.as_ref()) {
-            if let Some(addr) = decode_peers(to).into_iter().next() {
-                self.queued_events
-                    .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
-                        addr,
-                    )))));
-                return;
+        if let Some(id) = msg.id {
+            match self.kbuckets.entry(&Key::new(id)) {
+                Entry::Present(mut entry, _) => {
+                    entry.value().next_ping = Instant::now() + self.ping_job.interval;
+                    self.queued_events
+                        .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
+                            entry.value().addr,
+                        )))));
+                    return;
+                }
+                Entry::Pending(mut entry, _) => {
+                    entry.value().next_ping = Instant::now() + self.ping_job.interval;
+                    self.queued_events
+                        .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
+                            entry.value().addr,
+                        )))));
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -450,6 +505,7 @@ impl Dht {
             ))))
     }
 
+    /// Process a response
     fn on_response(&mut self, req: Message, resp: Message, peer: Peer, id: QueryId) {
         if req.is_ping() {
             self.on_pong(resp, peer);
@@ -465,15 +521,12 @@ impl Dht {
     }
 
     /// Handle a custom command request
-    fn on_command_req(
-        &mut self,
-        ty: Type,
-        command: String,
-        msg: Message,
-        peer: Peer,
-    ) -> RequestResult {
+    fn on_command_req(&mut self, ty: Type, command: String, msg: Message, peer: Peer) {
         if msg.target.is_none() {
-            return Err(RequestError::MissingTarget { msg, peer });
+            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                RequestError::MissingTarget { msg, peer },
+            )));
+            return;
         }
         if self.commands.contains(&command) {
             // let res = if ty == Type::Update {
@@ -497,12 +550,18 @@ impl Dht {
                     target: msg.target.clone(),
                     value: msg.value,
                 };
-                Ok(RequestOk::CustomCommandRequest { query })
+                self.queued_events.push_back(DhtEvent::RequestResult(Ok(
+                    RequestOk::CustomCommandRequest { query },
+                )));
             } else {
-                Err(RequestError::MissingTarget { msg, peer })
+                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                    RequestError::MissingTarget { msg, peer },
+                )));
             }
         } else {
-            Err(RequestError::UnsupportedCommand { command, msg, peer })
+            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                RequestError::UnsupportedCommand { command, msg, peer },
+            )));
         }
     }
 
@@ -515,13 +574,12 @@ impl Dht {
         }
 
         if let Some(cmd) = msg.get_command() {
-            let res = match cmd {
+            match cmd {
                 Command::Ping => self.on_ping(msg, peer),
                 Command::FindNode => self.on_findnode(msg, peer),
-                Command::HolePunch => self.on_holepunch(msg, peer),
+                Command::Holepunch => self.on_holepunch(msg, peer),
                 Command::Unknown(s) => self.on_command_req(ty, s, msg, peer),
             };
-            self.queued_events.push_back(DhtEvent::RequestResult(res));
         } else {
             // TODO refactor with oncommand fn
             if msg.target.is_none() {
@@ -545,31 +603,52 @@ impl Dht {
     }
 
     /// Handle a ping request
-    fn on_ping(&mut self, msg: Message, peer: Peer) -> RequestResult {
+    fn on_ping(&mut self, msg: Message, peer: Peer) {
         if let Some(ref val) = msg.value {
-            if self.id.preimage() == val {
-                // TODO handle
-                return Err(RequestError::InvalidValue { peer, msg });
+            if self.id.preimage() != val {
+                // ping wasn't meant for this node
+                // TODO
+                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                    RequestError::InvalidValue { peer, msg },
+                )));
+                return;
             }
         }
-
         self.io
             .response(msg, Some(peer.encode()), None, peer.clone());
-
-        Ok(RequestOk::Responded { peer })
     }
 
-    fn on_findnode(&mut self, msg: Message, peer: Peer) -> RequestResult {
+    fn on_findnode(&mut self, msg: Message, peer: Peer) {
         if let Some(key) = msg.valid_id_key_bytes() {
             let closer_nodes = self.closer_nodes(&key, 20);
             self.io
                 .response(msg, None, Some(closer_nodes), peer.clone());
         }
-        Ok(RequestOk::Responded { peer })
     }
 
-    fn on_holepunch(&mut self, msg: Message, peer: Peer) -> RequestResult {
-        unimplemented!()
+    fn on_holepunch(&mut self, mut msg: Message, mut peer: Peer) {
+        if let Some(value) = msg.decode_holepunch() {
+            if value.to.is_some() {
+                if let Some(to) = value.decode_to_peer() {
+                    if to == peer.addr {
+                        // don't forward to self
+                        return;
+                    }
+                    msg.version = Some(VERSION);
+                    msg.id = self.io.msg_id();
+                    msg.to = Some(to.encode());
+                    msg.set_holepunch(&Holepunch::with_from(peer.encode()));
+                    self.io.send_message(MessageEvent::Response { msg, peer });
+                    return;
+                } else {
+                    return;
+                }
+            }
+            if let Some(from) = value.decode_from_peer() {
+                peer = Peer::from(from)
+            }
+            self.io.response(msg, None, None, peer)
+        }
     }
 
     fn reply(
@@ -578,7 +657,7 @@ impl Dht {
         peer: Peer,
         res: Result<Option<Vec<u8>>, String>,
         key: &KeyBytes,
-    ) -> RequestResult {
+    ) {
         let closer_nodes = self.closer_nodes(key, 20);
         match res {
             Ok(value) => {
@@ -590,7 +669,6 @@ impl Dht {
                     .error(msg, Some(err), None, Some(closer_nodes), peer.clone());
             }
         }
-        Ok(RequestOk::Responded { peer })
     }
 
     /// Get the `num` closest nodes in the bucket.
@@ -616,13 +694,16 @@ impl Dht {
             IoHandlerEvent::InMessageErr { .. } => {}
             IoHandlerEvent::InSocketErr { .. } => {}
             IoHandlerEvent::InResponseBadId { peer, .. } => {
-                // a bad id was supplied in the response from the peer
+                // a bad or non existing id was supplied in the response from the peer
+                // ephemeral nodes won't send their id, therefor responses will end up here
                 if self.remove_node(&peer).is_some() {
                     self.queued_events
                         .push_back(DhtEvent::RemovedBadIdNode(peer));
                 }
             }
-            IoHandlerEvent::OutRequest { .. } => {}
+            IoHandlerEvent::OutRequest { .. } => {
+                // sent a request
+            }
             IoHandlerEvent::InResponse {
                 req,
                 resp,
@@ -675,13 +756,24 @@ impl Dht {
         None
     }
 
-    /// Handles a finished (i.e. successful) query.
+    /// Handles a finished query.
     fn query_finished(&mut self, query: QueryStream) -> Option<DhtEvent> {
         let result = query.into_result();
 
         // add nodes to the table
-        for (peer, token, to) in result.peers {
-            self.add_node(&peer.id, Peer::from(peer.addr), Some(token), to);
+        for (peer, state) in result.peers {
+            match state {
+                PeerState::Failed => {
+                    self.remove_peer(peer.id);
+                }
+                PeerState::Succeeded {
+                    roundtrip_token,
+                    to,
+                } => {
+                    self.add_node(&peer.id, Peer::from(peer.addr), Some(roundtrip_token), to);
+                }
+                _ => {}
+            }
         }
 
         Some(DhtEvent::QueryResult {
@@ -692,8 +784,8 @@ impl Dht {
     }
 
     /// Handles a query that timed out.
-    fn query_timeout(&self, query: QueryStream) -> Option<DhtEvent> {
-        unimplemented!()
+    fn query_timeout(&mut self, query: QueryStream) -> Option<DhtEvent> {
+        self.query_finished(query)
     }
 }
 
@@ -703,10 +795,16 @@ impl Stream for Dht {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        let delay = &mut pin.find_node_job.delay;
+        let now = Instant::now();
 
-        if let Poll::Ready(Ok(_)) = Delay::poll(Pin::new(delay), cx) {
-            //pin.bootstrap();
+        if let Poll::Ready(()) = pin.bootstrap_job.poll(cx, now) {
+            if pin.kbuckets.iter().count() < 20 {
+                pin.bootstrap();
+            }
+        }
+
+        if let Poll::Ready(()) = pin.ping_job.poll(cx, now) {
+            pin.ping_some()
         }
 
         loop {
@@ -738,7 +836,6 @@ impl Stream for Dht {
 
             // Look for a sent/received message
             loop {
-                debug!("polling io handler");
                 match Stream::poll_next(Pin::new(&mut pin.io), cx) {
                     Poll::Ready(Some(event)) => pin.inject_event(event),
                     _ => break,
@@ -756,26 +853,24 @@ impl Stream for Dht {
     }
 }
 
-#[derive(Debug)]
-struct FindNodeJob {
-    interval: Duration,
-    delay: Delay,
-}
-
-impl FindNodeJob {
-    fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            delay: Delay::new(interval),
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Peer {
     pub addr: SocketAddr,
     /// Referrer that told us about this node.
     pub referrer: Option<SocketAddr>,
+}
+
+impl Into<Holepunch> for &Peer {
+    fn into(self) -> Holepunch {
+        Holepunch::with_from(self.encode())
+    }
+}
+
+impl Into<Holepunch> for SocketAddr {
+    fn into(self) -> Holepunch {
+        let peer = Peer::from(self);
+        (&peer).into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -805,6 +900,8 @@ pub struct Node {
     pub roundtrip_token: Option<Vec<u8>>,
     /// Decoded address of the `to` message field
     pub to: Option<SocketAddr>,
+
+    pub next_ping: Instant,
 }
 
 impl Peer {
@@ -822,6 +919,7 @@ impl<T: Into<SocketAddr>> From<T> for Peer {
     }
 }
 
+/// Response received from `peer` to a request submitted by this DHT.
 #[derive(Debug)]
 pub struct Response {
     query: QueryId,
@@ -863,55 +961,51 @@ pub type RequestResult = Result<RequestOk, RequestError>;
 
 #[derive(Debug)]
 pub enum RequestOk {
-    Responded {
-        peer: Peer,
-    },
     /// Custom request to a registered command
     ///
     /// # Note
     ///
     /// Custom commands are not automatically replied to and need to be answered manually
     CustomCommandRequest {
+        /// The query we received and need to respond to
         query: QueryCommand,
     },
 }
 
 #[derive(Debug)]
 pub enum RequestError {
+    /// Received a query with a custom command that is not registered
     UnsupportedCommand {
+        /// The unknown command
         command: String,
+        /// The message we received from the peer.
         msg: Message,
+        /// The peer the message originated from.
         peer: Peer,
     },
-    MissingTarget {
-        msg: Message,
-        peer: Peer,
-    },
-    InvalidType {
-        ty: i32,
-        msg: Message,
-        peer: Peer,
-    },
-    MissingCommand {
-        peer: Peer,
-    },
-    /// Ignore Request due to value being this peer's id
-    InvalidValue {
-        msg: Message,
-        peer: Peer,
-    },
+    /// The `target` field of message was required but was empty
+    MissingTarget { msg: Message, peer: Peer },
+    /// Received a message with a type other than [`Type::Query`], [`Type::Response`], [`Type::Update`]
+    InvalidType { ty: i32, msg: Message, peer: Peer },
+    /// Received a request with no command attached.
+    MissingCommand { peer: Peer },
+    /// Ignored Request due to message's value being this peer's id.
+    InvalidValue { msg: Message, peer: Peer },
 }
 
 pub type ResponseResult = Result<ResponseOk, ResponseError>;
 
 #[derive(Debug)]
 pub enum ResponseOk {
+    /// Received a pong response to our ping request.
     Pong(Peer),
+    /// A remote peer successfully responded to our query
     Response(Response),
 }
 
 #[derive(Debug)]
 pub enum ResponseError {
+    /// We received a bad pong to our ping request
     InvalidPong(Peer),
 }
 

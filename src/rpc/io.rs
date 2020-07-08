@@ -22,6 +22,7 @@ use wasm_timer::Instant;
 
 use crate::kbucket::Key;
 use crate::rpc::fill_random_bytes;
+use crate::rpc::message::Holepunch;
 use crate::{
     kbucket::KeyBytes,
     peers::PeersEncoding,
@@ -91,11 +92,27 @@ impl<TUserData> MessageEvent<TUserData> {
             MessageEvent::Response { peer, msg } => (msg, peer),
         }
     }
+
+    fn inner_mut(&mut self) -> (&mut Message, &mut Peer) {
+        match self {
+            MessageEvent::Update { peer, msg, .. } => (msg, peer),
+            MessageEvent::Query { peer, msg, .. } => (msg, peer),
+            MessageEvent::Response { peer, msg } => (msg, peer),
+        }
+    }
+
+    fn into_inner(self) -> (Message, Peer) {
+        match self {
+            MessageEvent::Update { peer, msg, .. } => (msg, peer),
+            MessageEvent::Query { peer, msg, .. } => (msg, peer),
+            MessageEvent::Response { peer, msg } => (msg, peer),
+        }
+    }
 }
 
 // TODO merge this with the DHT struct
 pub struct IoHandler<TUserData> {
-    id: Key<Vec<u8>>,
+    id: Option<Key<Vec<u8>>>,
     socket: UdpFramed<DhtRpcCodec>,
     /// Messages to send
     pending_send: VecDeque<MessageEvent<TUserData>>,
@@ -121,9 +138,13 @@ pub struct IoConfig {
 
 impl<TUserData> IoHandler<TUserData>
 where
-    TUserData: fmt::Debug,
+    TUserData: fmt::Debug + Clone,
 {
-    pub fn new(id: Key<Vec<u8>>, socket: UdpSocket, config: IoConfig) -> IoHandler<TUserData> {
+    pub fn new(
+        id: Option<Key<Vec<u8>>>,
+        socket: UdpSocket,
+        config: IoConfig,
+    ) -> IoHandler<TUserData> {
         let socket = UdpFramed::new(socket, DhtRpcCodec::default());
 
         let secrets = config.secrets.unwrap_or_else(|| {
@@ -150,6 +171,10 @@ where
         }
     }
 
+    pub(crate) fn msg_id(&self) -> Option<Vec<u8>> {
+        self.id.as_ref().map(|k| k.preimage().clone())
+    }
+
     /// Generate the next request id
     fn next_req_id(&mut self) -> RequestId {
         let rid = self.next_req_id;
@@ -157,8 +182,8 @@ where
         rid
     }
 
-    pub fn address(&self) -> &SocketAddr {
-        unimplemented!()
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.get_ref().local_addr()
     }
 
     /// Generate a blake2 hash based on the peer's ip and the provided secret
@@ -169,8 +194,27 @@ where
         context.finalize()
     }
 
-    pub fn holepunch(&mut self, peer: SocketAddr, referrer: SocketAddr) -> anyhow::Result<()> {
-        unimplemented!()
+    fn holepunch(
+        &mut self,
+        mut msg: Message,
+        peer: SocketAddr,
+        referrer: SocketAddr,
+        user_data: TUserData,
+    ) {
+        msg.version = Some(VERSION);
+        msg.r#type = Type::Query.id();
+        msg.to = Some(referrer.encode());
+        if msg
+            .set_holepunch(&Holepunch::with_to(peer.encode()))
+            .is_err()
+        {
+            return;
+        }
+        self.send_message(MessageEvent::Query {
+            msg,
+            peer: Peer::from(referrer),
+            user_data,
+        })
     }
 
     /// Start sending a new message if any is pending
@@ -203,6 +247,33 @@ where
         Ok(())
     }
 
+    fn request(&mut self, mut ev: MessageEvent<TUserData>) {
+        let (msg, peer) = ev.inner_mut();
+        msg.rid = self.next_req_id().0;
+
+        if msg.is_holepunch() && peer.referrer.is_some() {
+            match &ev {
+                MessageEvent::Update {
+                    msg,
+                    peer,
+                    user_data,
+                }
+                | MessageEvent::Query {
+                    msg,
+                    peer,
+                    user_data,
+                } => self.holepunch(
+                    msg.clone(),
+                    peer.addr,
+                    peer.referrer.unwrap(),
+                    user_data.clone(),
+                ),
+                _ => {}
+            }
+        }
+        self.pending_send.push_back(ev)
+    }
+
     /// Send a new Query message
     pub fn query(
         &mut self,
@@ -215,9 +286,9 @@ where
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Query.id(),
-            rid: self.next_req_id.0,
+            rid: 0,
             to: Some(peer.encode()),
-            id: Some(self.id.preimage().clone()),
+            id: self.msg_id(),
             target,
             closer_nodes: None,
             roundtrip_token: None,
@@ -226,7 +297,7 @@ where
             value,
         };
 
-        self.pending_send.push_back(MessageEvent::Query {
+        self.request(MessageEvent::Query {
             msg,
             peer,
             user_data,
@@ -246,7 +317,7 @@ where
             r#type: Type::Response.id(),
             rid: request.rid,
             to: Some(peer.encode()),
-            id: Some(self.id.preimage().clone()),
+            id: self.msg_id(),
             target: None,
             closer_nodes,
             roundtrip_token: None,
@@ -270,7 +341,7 @@ where
             r#type: Type::Response.id(),
             rid: request.rid,
             to: Some(peer.encode()),
-            id: Some(self.id.preimage().clone()),
+            id: self.msg_id(),
             target: None,
             closer_nodes,
             roundtrip_token: Some(self.token(&peer, &self.secrets.0[..]).as_bytes().to_vec()),
@@ -280,6 +351,10 @@ where
         };
         self.pending_send
             .push_back(MessageEvent::Response { msg, peer })
+    }
+
+    pub fn send_message(&mut self, msg: MessageEvent<TUserData>) {
+        self.pending_send.push_back(msg)
     }
 
     /// Send an update message
@@ -296,9 +371,9 @@ where
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Update.id(),
-            rid: self.next_req_id.0,
+            rid: 0,
             to: Some(peer.encode()),
-            id: Some(self.id.preimage().clone()),
+            id: self.msg_id(),
             target,
             closer_nodes: None,
             roundtrip_token,
@@ -306,11 +381,12 @@ where
             error: None,
             value,
         };
-        self.pending_send.push_back(MessageEvent::Update {
+
+        self.request(MessageEvent::Update {
             msg,
             peer,
             user_data,
-        })
+        });
     }
 
     fn on_response(&mut self, recv: Message, peer: Peer) -> IoHandlerEvent<TUserData> {
@@ -401,7 +477,7 @@ where
     }
 }
 
-impl<TUserData: Unpin + fmt::Debug> Stream for IoHandler<TUserData> {
+impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
     type Item = IoHandlerEvent<TUserData>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
