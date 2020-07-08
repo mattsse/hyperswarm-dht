@@ -14,6 +14,8 @@ use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::QueryCommand;
 use crate::rpc::{Peer, PeerId, RequestId};
+use futures::StreamExt;
+use prost::Message as ProstMessage;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
@@ -21,6 +23,43 @@ pub struct Holepunch {
     pub from: ::std::option::Option<std::vec::Vec<u8>>,
     #[prost(bytes, optional, tag = "3")]
     pub to: ::std::option::Option<std::vec::Vec<u8>>,
+}
+
+impl Holepunch {
+    pub fn new(from: Vec<u8>, to: Vec<u8>) -> Self {
+        Self {
+            from: Some(from),
+            to: Some(to),
+        }
+    }
+
+    pub fn with_from(from: Vec<u8>) -> Self {
+        Self {
+            from: Some(from),
+            to: None,
+        }
+    }
+
+    pub fn with_to(to: Vec<u8>) -> Self {
+        Self {
+            from: None,
+            to: Some(to),
+        }
+    }
+
+    /// Decode the `to` field into [`SocketAddr`]
+    pub fn decode_to_peer(&self) -> Option<SocketAddr> {
+        self.to
+            .as_ref()
+            .and_then(|to| decode_peers(to.as_slice()).into_iter().next())
+    }
+
+    /// Decode the `from` field into [`SocketAddr`]
+    pub fn decode_from_peer(&self) -> Option<SocketAddr> {
+        self.from
+            .as_ref()
+            .and_then(|from| decode_peers(from.as_slice()).into_iter().next())
+    }
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -146,6 +185,20 @@ impl Message {
             .unwrap_or_default()
     }
 
+    /// Decode the messages value into [`Holepunch`]
+    pub fn decode_holepunch(&self) -> Option<Holepunch> {
+        self.value
+            .as_ref()
+            .and_then(|val| Holepunch::decode(val.as_slice()).ok())
+    }
+
+    pub fn set_holepunch(&mut self, holepunch: &Holepunch) -> Result<(), prost::EncodeError> {
+        let mut buf = Vec::with_capacity(holepunch.encoded_len());
+        holepunch.encode(&mut buf)?;
+        self.value = Some(buf);
+        Ok(())
+    }
+
     pub(crate) fn valid_id_key_bytes(&self) -> Option<KeyBytes> {
         Self::as_valid_key_bytes(self.id.as_ref())
     }
@@ -204,14 +257,14 @@ pub trait CommandCodec:
 pub enum Command {
     Ping,
     FindNode,
-    HolePunch,
+    Holepunch,
     Unknown(String),
 }
 
 impl<T: AsRef<str>> From<T> for Command {
     fn from(s: T) -> Self {
         match s.as_ref() {
-            "_holepunch" => Command::HolePunch,
+            "_holepunch" => Command::Holepunch,
             "_find_node" => Command::FindNode,
             "_ping" => Command::Ping,
             s => Command::Unknown(s.to_string()),
@@ -224,7 +277,7 @@ impl fmt::Display for Command {
         match self {
             Command::Ping => f.write_str("_ping"),
             Command::FindNode => f.write_str("_find_node"),
-            Command::HolePunch => f.write_str("_holepunch"),
+            Command::Holepunch => f.write_str("_holepunch"),
             Command::Unknown(s) => f.write_str(s),
         }
     }
