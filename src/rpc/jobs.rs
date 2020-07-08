@@ -1,7 +1,8 @@
-use futures::task::{Context, Poll};
-use futures::Future;
 use std::pin::Pin;
 use std::time::Duration;
+
+use futures::task::{Context, Poll};
+use futures::Future;
 use wasm_timer::{Delay, Instant};
 
 /// Periodic job.

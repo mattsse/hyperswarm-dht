@@ -82,6 +82,7 @@ pub enum MessageEvent<TUserData> {
         msg: Message,
         peer: Peer,
     },
+    // TODO FireAndForget like Response?
 }
 
 impl<TUserData> MessageEvent<TUserData> {

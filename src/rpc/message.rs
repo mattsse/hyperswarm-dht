@@ -5,7 +5,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use futures::StreamExt;
 use futures_codec::{Decoder, Encoder};
+use prost::Message as ProstMessage;
 use sha2::digest::generic_array::GenericArray;
 use wasm_timer::Instant;
 
@@ -14,8 +16,6 @@ use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::QueryCommand;
 use crate::rpc::{Peer, PeerId, RequestId};
-use futures::StreamExt;
-use prost::Message as ProstMessage;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
