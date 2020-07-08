@@ -6,7 +6,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::rpc::message::Message;
 
-/// Gossip codec for the framing
+/// Rpc codec for the framing
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DhtRpcCodec;
 
@@ -15,7 +15,7 @@ impl Decoder for DhtRpcCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // Note the udpsocket reads an entire datagram message from the remote address. Therefor `src` should include the entire `Message` payload
+        // Note: the udpsocket reads an entire datagram message from the remote address. Therefor `src` should include the entire `Message` payload
         Message::decode(src).map(Some).map_err(invalid_data)
     }
 }
