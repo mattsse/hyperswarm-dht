@@ -14,7 +14,7 @@ use crate::rpc::{self, PeerId};
 pub struct QueryTable {
     id: Key<Vec<u8>>,
     target: Key<Vec<u8>>,
-    /// The closest peers to the target, ordered by increasing distance.
+    /// The closest peers to the target.
     peers: FnvHashMap<Key<PeerId>, PeerState>,
 }
 

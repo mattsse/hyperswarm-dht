@@ -22,22 +22,18 @@ use tokio::net::UdpSocket;
 use tokio_util::udp::UdpFramed;
 use wasm_timer::{Delay, Instant};
 
-use crate::rpc::io::{MessageEvent, VERSION};
-use crate::rpc::jobs::PeriodicJob;
-use crate::rpc::message::Holepunch;
 use crate::{
     kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
-    peers::decode_peers,
-    peers::{PeersCodec, PeersEncoding},
-    rpc::io::IoConfig,
-    rpc::protocol::DhtRpcCodec,
-    rpc::query::table::PeerState,
-    rpc::query::{QueryConfig, QueryEvent, QueryPoolState, QueryStats, QueryStream, QueryType},
+    peers::{decode_peers, PeersCodec, PeersEncoding},
     rpc::{
-        io::{IoHandler, IoHandlerEvent},
-        message::Type,
-        message::{Command, CommandCodec, Message},
-        query::{QueryCommand, QueryId, QueryPool},
+        io::{IoConfig, IoHandler, IoHandlerEvent, MessageEvent, VERSION},
+        jobs::PeriodicJob,
+        message::{Command, CommandCodec, Holepunch, Message, Type},
+        protocol::DhtRpcCodec,
+        query::{
+            table::PeerState, QueryCommand, QueryConfig, QueryEvent, QueryId, QueryPool,
+            QueryPoolState, QueryStats, QueryStream, QueryType,
+        },
     },
 };
 
@@ -78,6 +74,7 @@ pub struct DhtConfig {
     ping_interval: Duration,
     connection_idle_timeout: Duration,
     ephemeral: bool,
+    pub(crate) adaptive: bool,
     bootstrap_nodes: Vec<SocketAddr>,
     socket: Option<UdpSocket>,
 }
@@ -93,6 +90,7 @@ impl Default for DhtConfig {
             bootstrap_interval: Duration::from_secs(320),
             connection_idle_timeout: Duration::from_secs(10),
             ephemeral: false,
+            adaptive: false,
             bootstrap_nodes: vec![],
             socket: None,
             io_config: Default::default(),
@@ -205,6 +203,11 @@ impl DhtConfig {
     /// An ephemeral dht node won't expose its id to remote peers, hence being ignored.
     pub fn ephemeral(mut self) -> Self {
         self.ephemeral = true;
+        self
+    }
+
+    pub fn adaptive(mut self) -> Self {
+        self.adaptive = true;
         self
     }
 
@@ -486,18 +489,16 @@ impl RpcDht {
             match self.kbuckets.entry(&Key::new(id)) {
                 Entry::Present(mut entry, _) => {
                     entry.value().next_ping = Instant::now() + self.ping_job.interval;
-                    self.queued_events
-                        .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
-                            entry.value().addr,
-                        )))));
+                    self.queued_events.push_back(RpcDhtEvent::ResponseResult(Ok(
+                        ResponseOk::Pong(Peer::from(entry.value().addr)),
+                    )));
                     return;
                 }
                 Entry::Pending(mut entry, _) => {
                     entry.value().next_ping = Instant::now() + self.ping_job.interval;
-                    self.queued_events
-                        .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
-                            entry.value().addr,
-                        )))));
+                    self.queued_events.push_back(RpcDhtEvent::ResponseResult(Ok(
+                        ResponseOk::Pong(Peer::from(entry.value().addr)),
+                    )));
                     return;
                 }
                 _ => {}
@@ -505,9 +506,9 @@ impl RpcDht {
         }
 
         self.queued_events
-            .push_back(RpcDhtEvent::ResponseResult(Err(ResponseError::InvalidPong(
-                peer,
-            ))))
+            .push_back(RpcDhtEvent::ResponseResult(Err(
+                ResponseError::InvalidPong(peer),
+            )))
     }
 
     /// Process a response
@@ -924,13 +925,14 @@ impl<T: Into<SocketAddr>> From<T> for Peer {
 }
 
 /// Response received from `peer` to a request submitted by this DHT.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Response {
-    query: QueryId,
-    cmd: Command,
-    to: Option<SocketAddr>,
-    peer: PeerId,
-    value: Option<Vec<u8>>,
+    pub query: QueryId,
+    pub cmd: Command,
+    pub ty: QueryType,
+    pub to: Option<SocketAddr>,
+    pub peer: PeerId,
+    pub value: Option<Vec<u8>>,
 }
 
 /// Unique identifier for a request. Must be passed back in order to answer a request from
@@ -1013,6 +1015,7 @@ pub enum ResponseError {
     InvalidPong(Peer),
 }
 
+#[inline]
 pub(crate) fn fill_random_bytes(dest: &mut [u8]) {
     use rand::SeedableRng;
     use rand::{

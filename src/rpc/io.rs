@@ -20,15 +20,17 @@ use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
 
-use crate::kbucket::Key;
-use crate::rpc::fill_random_bytes;
-use crate::rpc::message::Holepunch;
 use crate::{
+    kbucket::Key,
     kbucket::KeyBytes,
     peers::PeersEncoding,
-    rpc::message::{Command, Message, Type},
-    rpc::protocol::DhtRpcCodec,
-    rpc::{Peer, RequestId},
+    rpc::{
+        fill_random_bytes,
+        message::Holepunch,
+        message::{Command, Message, Type},
+        protocol::DhtRpcCodec,
+        Peer, RequestId,
+    },
 };
 use rand::Rng;
 use std::ops::Deref;
