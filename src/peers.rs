@@ -122,3 +122,7 @@ impl PeersEncoding for SocketAddr {
         buf
     }
 }
+
+fn decode_local(perfix: impl AsRef<[u8]>, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
+    unimplemented!()
+}
