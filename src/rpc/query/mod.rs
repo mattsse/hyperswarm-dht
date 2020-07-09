@@ -23,6 +23,7 @@ mod peers;
 pub mod table;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
+#[derive(Debug)]
 pub struct QueryPool {
     local_id: Key<Vec<u8>>,
     queries: FnvHashMap<QueryId, QueryStream>,

@@ -182,12 +182,13 @@ impl DhtConfig {
         self
     }
 
+    /// Register all commands to listen to.
     pub fn register_commands<T, I>(mut self, cmds: I) -> Self
     where
-        I: Iterator<Item = T>,
+        I: IntoIterator<Item = T>,
         T: ToString,
     {
-        for cmd in cmds {
+        for cmd in cmds.into_iter() {
             self.commands.insert(cmd.to_string());
         }
         self
@@ -208,7 +209,7 @@ impl DhtConfig {
     }
 
     /// Set the nodes to bootstrap from
-    pub fn set_bootstrap_nodes<T: ToSocketAddrs>(mut self, addresses: &[T]) -> Self {
+    pub fn add_bootstrap_nodes<T: ToSocketAddrs>(mut self, addresses: &[T]) -> Self {
         for addrs in addresses {
             if let Ok(addrs) = addrs.to_socket_addrs() {
                 for addr in addrs {
@@ -217,6 +218,10 @@ impl DhtConfig {
             }
         }
         self
+    }
+
+    pub fn bootstrap_nodes(&mut self) -> &mut Vec<SocketAddr> {
+        &mut self.bootstrap_nodes
     }
 }
 
@@ -826,8 +831,7 @@ impl Stream for Dht {
                     QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
                     QueryPoolState::Timeout(q) => {
                         if let Some(event) = pin.query_timeout(q) {
-                            // TODO timeout failed remote
-                            // return Async::Ready(NetworkBehaviourAction::GenerateEvent(event))
+                            return Poll::Ready(Some(event));
                         }
                     }
                     QueryPoolState::Waiting(None) | QueryPoolState::Idle => break,
@@ -900,7 +904,7 @@ pub struct Node {
     pub roundtrip_token: Option<Vec<u8>>,
     /// Decoded address of the `to` message field
     pub to: Option<SocketAddr>,
-
+    /// When a new ping is due
     pub next_ping: Instant,
 }
 

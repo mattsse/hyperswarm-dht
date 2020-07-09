@@ -5,7 +5,8 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
-use blake2_rfc::blake2b::{blake2b, Blake2b, Blake2bResult};
+use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
+use blake2::{Blake2b, Digest};
 use bytes::Bytes;
 use fnv::FnvHashMap;
 use futures::{
@@ -15,7 +16,6 @@ use futures::{
 };
 use log::debug;
 use prost::Message as ProtoMessage;
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
@@ -30,6 +30,8 @@ use crate::{
     rpc::protocol::DhtRpcCodec,
     rpc::{Peer, RequestId},
 };
+use rand::Rng;
+use std::ops::Deref;
 
 pub const VERSION: u64 = 1;
 
@@ -111,7 +113,6 @@ impl<TUserData> MessageEvent<TUserData> {
     }
 }
 
-// TODO merge this with the DHT struct
 pub struct IoHandler<TUserData> {
     id: Option<Key<Vec<u8>>>,
     socket: UdpFramed<DhtRpcCodec>,
@@ -164,12 +165,17 @@ where
             pending_recv: Default::default(),
             secrets,
             queued_events: Default::default(),
-            next_req_id: RequestId(0),
+            next_req_id: Self::random_id(),
             rotation: config
                 .rotation
                 .unwrap_or_else(|| Duration::from_millis(300_000)),
             last_rotation: Instant::now(),
         }
+    }
+
+    fn random_id() -> RequestId {
+        use rand::Rng;
+        RequestId(rand::thread_rng().gen())
     }
 
     pub(crate) fn msg_id(&self) -> Option<Vec<u8>> {
@@ -188,8 +194,8 @@ where
     }
 
     /// Generate a blake2 hash based on the peer's ip and the provided secret
-    fn token(&self, peer: &Peer, secret: &[u8]) -> Blake2bResult {
-        let mut context = Blake2b::new(32);
+    fn token(&self, peer: &Peer, secret: &[u8]) -> GenericArray<u8, U64> {
+        let mut context = Blake2b::new();
         context.update(secret);
         context.update(peer.addr.ip().to_string().as_bytes());
         context.finalize()
@@ -345,7 +351,7 @@ where
             id: self.msg_id(),
             target: None,
             closer_nodes,
-            roundtrip_token: Some(self.token(&peer, &self.secrets.0[..]).as_bytes().to_vec()),
+            roundtrip_token: Some(self.token(&peer, &self.secrets.0[..]).to_vec()),
             command: None,
             error: None,
             value,
@@ -434,8 +440,8 @@ where
                 }),
                 Type::Update => {
                     if let Some(ref rt) = msg.roundtrip_token {
-                        if rt.as_slice() != self.token(&peer, &self.secrets.0).as_bytes()
-                            && rt.as_slice() != self.token(&peer, &self.secrets.1).as_bytes()
+                        if rt.as_slice() != self.token(&peer, &self.secrets.0).deref()
+                            && rt.as_slice() != self.token(&peer, &self.secrets.1).deref()
                         {
                             None
                         } else {
