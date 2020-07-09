@@ -504,7 +504,7 @@ pub enum QueryEvent {
 
 #[derive(Debug, Clone)]
 pub struct QueryCommand {
-    /// Whether this a query/update response
+    /// Whether this a query/update request
     pub ty: Type,
     /// Command def
     pub command: String,

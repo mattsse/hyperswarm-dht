@@ -47,7 +47,7 @@ pub mod message;
 pub mod protocol;
 pub mod query;
 
-pub struct Dht {
+pub struct RpcDht {
     id: Key<Vec<u8>>,
     query_id: Option<Key<Vec<u8>>>,
     // TODO change Key to Key<PeerId>
@@ -61,7 +61,7 @@ pub struct Dht {
     // TODO support custom encoding?
     commands: HashSet<String>,
     /// Queued events to return when being polled.
-    queued_events: VecDeque<DhtEvent>,
+    queued_events: VecDeque<RpcDhtEvent>,
     /// Nodes to bootstrap from
     bootstrap_nodes: Vec<SocketAddr>,
     bootstrapped: bool,
@@ -225,7 +225,7 @@ impl DhtConfig {
     }
 }
 
-impl Dht {
+impl RpcDht {
     /// Creates a new `Dht` network behaviour with the given configuration.
     ///
     /// If no socket was created within then `DhtConfig`, a new socket at a random port will be created.
@@ -423,7 +423,7 @@ impl Dht {
 
                 match entry.insert(node, NodeStatus::Connected) {
                     kbucket::InsertResult::Inserted => {
-                        self.queued_events.push_back(DhtEvent::RoutingUpdated {
+                        self.queued_events.push_back(RpcDhtEvent::RoutingUpdated {
                             peer: peer.clone(),
                             old_peer: None,
                         });
@@ -487,7 +487,7 @@ impl Dht {
                 Entry::Present(mut entry, _) => {
                     entry.value().next_ping = Instant::now() + self.ping_job.interval;
                     self.queued_events
-                        .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
+                        .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
                             entry.value().addr,
                         )))));
                     return;
@@ -495,7 +495,7 @@ impl Dht {
                 Entry::Pending(mut entry, _) => {
                     entry.value().next_ping = Instant::now() + self.ping_job.interval;
                     self.queued_events
-                        .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
+                        .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Pong(Peer::from(
                             entry.value().addr,
                         )))));
                     return;
@@ -505,7 +505,7 @@ impl Dht {
         }
 
         self.queued_events
-            .push_back(DhtEvent::ResponseResult(Err(ResponseError::InvalidPong(
+            .push_back(RpcDhtEvent::ResponseResult(Err(ResponseError::InvalidPong(
                 peer,
             ))))
     }
@@ -520,7 +520,7 @@ impl Dht {
         if let Some(query) = self.queries.get_mut(&id) {
             if let Some(resp) = query.inject_response(resp, peer.clone()) {
                 self.queued_events
-                    .push_back(DhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))))
+                    .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))))
             }
         }
     }
@@ -528,7 +528,7 @@ impl Dht {
     /// Handle a custom command request
     fn on_command_req(&mut self, ty: Type, command: String, msg: Message, peer: Peer) {
         if msg.target.is_none() {
-            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+            self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                 RequestError::MissingTarget { msg, peer },
             )));
             return;
@@ -555,16 +555,16 @@ impl Dht {
                     target: msg.target.clone(),
                     value: msg.value,
                 };
-                self.queued_events.push_back(DhtEvent::RequestResult(Ok(
+                self.queued_events.push_back(RpcDhtEvent::RequestResult(Ok(
                     RequestOk::CustomCommandRequest { query },
                 )));
             } else {
-                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                     RequestError::MissingTarget { msg, peer },
                 )));
             }
         } else {
-            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+            self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                 RequestError::UnsupportedCommand { command, msg, peer },
             )));
         }
@@ -588,7 +588,7 @@ impl Dht {
         } else {
             // TODO refactor with oncommand fn
             if msg.target.is_none() {
-                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                     RequestError::MissingTarget { peer, msg },
                 )));
                 return;
@@ -601,7 +601,7 @@ impl Dht {
                     &key,
                 );
             }
-            self.queued_events.push_back(DhtEvent::RequestResult(Err(
+            self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                 RequestError::MissingCommand { peer },
             )));
         }
@@ -613,7 +613,7 @@ impl Dht {
             if self.id.preimage() != val {
                 // ping wasn't meant for this node
                 // TODO
-                self.queued_events.push_back(DhtEvent::RequestResult(Err(
+                self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                     RequestError::InvalidValue { peer, msg },
                 )));
                 return;
@@ -703,7 +703,7 @@ impl Dht {
                 // ephemeral nodes won't send their id, therefor responses will end up here
                 if self.remove_node(&peer).is_some() {
                     self.queued_events
-                        .push_back(DhtEvent::RemovedBadIdNode(peer));
+                        .push_back(RpcDhtEvent::RemovedBadIdNode(peer));
                 }
             }
             IoHandlerEvent::OutRequest { .. } => {
@@ -731,7 +731,7 @@ impl Dht {
     }
 
     /// Delegate new query event to the io handler
-    fn inject_query_event(&mut self, id: QueryId, event: QueryEvent) -> Option<DhtEvent> {
+    fn inject_query_event(&mut self, id: QueryId, event: QueryEvent) -> Option<RpcDhtEvent> {
         match event {
             QueryEvent::Query {
                 peer,
@@ -762,7 +762,7 @@ impl Dht {
     }
 
     /// Handles a finished query.
-    fn query_finished(&mut self, query: QueryStream) -> Option<DhtEvent> {
+    fn query_finished(&mut self, query: QueryStream) -> Option<RpcDhtEvent> {
         let result = query.into_result();
 
         // add nodes to the table
@@ -781,7 +781,7 @@ impl Dht {
             }
         }
 
-        Some(DhtEvent::QueryResult {
+        Some(RpcDhtEvent::QueryResult {
             id: result.inner,
             cmd: result.cmd,
             stats: result.stats,
@@ -789,13 +789,13 @@ impl Dht {
     }
 
     /// Handles a query that timed out.
-    fn query_timeout(&mut self, query: QueryStream) -> Option<DhtEvent> {
+    fn query_timeout(&mut self, query: QueryStream) -> Option<RpcDhtEvent> {
         self.query_finished(query)
     }
 }
 
-impl Stream for Dht {
-    type Item = DhtEvent;
+impl Stream for RpcDht {
+    type Item = RpcDhtEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
@@ -939,7 +939,7 @@ pub struct Response {
 pub struct RequestId(pub(crate) u64);
 
 #[derive(Debug)]
-pub enum DhtEvent {
+pub enum RpcDhtEvent {
     RequestResult(RequestResult),
     ResponseResult(ResponseResult),
     RemovedBadIdNode(Peer),
@@ -965,7 +965,7 @@ pub type RequestResult = Result<RequestOk, RequestError>;
 
 #[derive(Debug)]
 pub enum RequestOk {
-    /// Custom request to a registered command
+    /// Custom incoming request to a registered command
     ///
     /// # Note
     ///
