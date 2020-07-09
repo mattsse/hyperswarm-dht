@@ -306,6 +306,7 @@ impl QueryStream {
 
         Some(Response {
             query: self.id,
+            ty: self.ty,
             cmd: self.cmd.clone(),
             to: resp.decode_to_peer(),
             peer: PeerId::new(peer.addr, resp.id.take().expect("s.a")),
@@ -456,7 +457,7 @@ impl QueryPeerIter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum QueryType {
     Query,
     Update,
