@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use hyperswarm_dht::rpc::{Dht, DhtConfig, DhtEvent};
+use hyperswarm_dht::rpc::{DhtConfig, RpcDht, RpcDhtEvent};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,9 +8,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(bootstrap) = std::env::args().nth(1) {
         println!("{}", bootstrap);
 
-        let mut b = Dht::with_config(
+        let mut b = RpcDht::with_config(
             DhtConfig::default()
-                .set_bootstrap_nodes(&[bootstrap])
+                .add_bootstrap_nodes(&[bootstrap])
+                .register_commands(&["values"])
                 .bind("127.0.0.1:3402")
                 .await
                 .expect("Failed to create dht with socket"),
@@ -24,16 +25,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("looping b");
             if let Some(event) = b.next().await {
                 match event {
-                    DhtEvent::RequestResult(res) => println!("b request result {:?}", res),
-                    DhtEvent::ResponseResult(res) => println!("b response result {:?}", res),
-                    DhtEvent::RemovedBadIdNode(_) => println!("b removed bad id node"),
-                    DhtEvent::RoutingUpdated { .. } => println!("b routing updated"),
-                    DhtEvent::QueryResult { .. } => println!("b query result"),
+                    RpcDhtEvent::RequestResult(res) => println!("b request result {:?}", res),
+                    RpcDhtEvent::ResponseResult(res) => println!("b response result {:?}", res),
+                    RpcDhtEvent::RemovedBadIdNode(_) => println!("b removed bad id node"),
+                    RpcDhtEvent::RoutingUpdated { peer, old_peer } => {
+                        println!("b routing updated {:?}", peer)
+                    }
+                    RpcDhtEvent::QueryResult { id, cmd, stats } => {
+                        println!("b query result {} {:?}", cmd, stats)
+                    }
                 }
             }
         }
     } else {
-        let mut a = Dht::with_config(
+        let mut a = RpcDht::with_config(
             DhtConfig::default()
                 .bind("127.0.0.1:3401")
                 .await
@@ -46,11 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 if let Some(event) = a.next().await {
                     match event {
-                        DhtEvent::RequestResult(res) => println!("request result {:?}", res),
-                        DhtEvent::ResponseResult(_) => println!("response result"),
-                        DhtEvent::RemovedBadIdNode(_) => println!("removed bad id node"),
-                        DhtEvent::RoutingUpdated { .. } => println!("routing updated"),
-                        DhtEvent::QueryResult { .. } => println!("query result"),
+                        RpcDhtEvent::RequestResult(res) => println!("request result {:?}", res),
+                        RpcDhtEvent::ResponseResult(_) => println!("response result"),
+                        RpcDhtEvent::RemovedBadIdNode(_) => println!("removed bad id node"),
+                        RpcDhtEvent::RoutingUpdated { .. } => println!("routing updated"),
+                        RpcDhtEvent::QueryResult { .. } => println!("query result"),
                     }
                 }
             }
