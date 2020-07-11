@@ -39,7 +39,7 @@ pub const VERSION: u64 = 1;
 
 const ROTATE_INTERVAL: u64 = 300_000;
 
-pub struct Request<TUserData> {
+struct Request<TUserData> {
     /// The message send
     message: Message,
     /// The remote peer
@@ -592,9 +592,4 @@ pub enum IoHandlerEvent<TUserData> {
     InSocketErr { err: io::Error },
     /// `msg` id was invalid
     InResponseBadId { msg: Message, peer: Peer },
-}
-
-#[derive(Debug, Clone)]
-pub struct Eviction {
-    timeout: Duration,
 }

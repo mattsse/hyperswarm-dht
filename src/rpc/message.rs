@@ -14,7 +14,7 @@ use wasm_timer::Instant;
 use crate::kbucket;
 use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
-use crate::rpc::query::QueryCommand;
+use crate::rpc::query::CommandQuery;
 use crate::rpc::{Peer, PeerId, RequestId};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -104,7 +104,7 @@ impl Message {
         self.r#type == Type::Update.id()
     }
 
-    fn as_valid_key_bytes(key: Option<&Vec<u8>>) -> Option<KeyBytes> {
+    fn valid_key_bytes(key: Option<&Vec<u8>>) -> Option<KeyBytes> {
         if let Some(id) = key {
             if id.len() == 32 {
                 return Some(KeyBytes::new(id.as_slice()));
@@ -200,11 +200,11 @@ impl Message {
     }
 
     pub(crate) fn valid_id_key_bytes(&self) -> Option<KeyBytes> {
-        Self::as_valid_key_bytes(self.id.as_ref())
+        Self::valid_key_bytes(self.id.as_ref())
     }
 
     pub(crate) fn valid_target_key_bytes(&self) -> Option<KeyBytes> {
-        Self::as_valid_key_bytes(self.target.as_ref())
+        Self::valid_key_bytes(self.target.as_ref())
     }
 
     pub(crate) fn valid_id(&self) -> Option<&[u8]> {
@@ -248,9 +248,9 @@ impl Type {
 pub trait CommandCodec:
     Encoder<Item = Vec<u8>, Error = io::Error> + Decoder<Item = Vec<u8>, Error = io::Error>
 {
-    fn update(&mut self, query: &QueryCommand) -> Result<Option<Vec<u8>>, String>;
+    fn update(&mut self, query: &CommandQuery) -> Result<Option<Vec<u8>>, String>;
 
-    fn query(&self, query: &QueryCommand) -> Result<Option<Vec<u8>>, String>;
+    fn query(&self, query: &CommandQuery) -> Result<Option<Vec<u8>>, String>;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

@@ -31,7 +31,7 @@ use crate::{
         message::{Command, CommandCodec, Holepunch, Message, Type},
         protocol::DhtRpcCodec,
         query::{
-            table::PeerState, QueryCommand, QueryConfig, QueryEvent, QueryId, QueryPool,
+            table::PeerState, CommandQuery, QueryConfig, QueryEvent, QueryId, QueryPool,
             QueryPoolState, QueryStats, QueryStream, QueryType,
         },
     },
@@ -43,9 +43,13 @@ pub mod message;
 pub mod protocol;
 pub mod query;
 
+/// An identifier for a node participating in the DHT.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct NodeId(pub [u8; 32]);
+
 pub struct RpcDht {
+    /// Identifier of this node
     id: Key<Vec<u8>>,
-    query_id: Option<Key<Vec<u8>>>,
     // TODO change Key to Key<PeerId>
     kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
     io: IoHandler<QueryId>,
@@ -255,11 +259,10 @@ impl RpcDht {
             .await?
         };
 
-        let io = IoHandler::new(query_id.clone(), socket, config.io_config);
+        let io = IoHandler::new(query_id, socket, config.io_config);
 
         Ok(Self {
             id: local_id.clone(),
-            query_id,
             kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
             io,
             bootstrap_job: PeriodicJob::new(config.bootstrap_interval),
@@ -422,6 +425,7 @@ impl RpcDht {
                     roundtrip_token,
                     to,
                     next_ping: Instant::now() + self.ping_job.interval,
+                    referrers: vec![],
                 };
 
                 match entry.insert(node, NodeStatus::Connected) {
@@ -526,7 +530,12 @@ impl RpcDht {
         }
     }
 
-    /// Handle a custom command request
+    /// Handle a custom command request.
+    ///
+    /// # Note
+    ///
+    /// This only checks if this custom `command` query is currently registered, but does not reply. Instead the incoming query is delegated to via [`Stream::poll`] as [`CommandQuery`] in [`RpcDhtEvent::RequestResult::RequestOk::CustomCommandRequest`].
+    /// It it the command's registrar's responsibility to process this query and eventually reply.
     fn on_command_req(&mut self, ty: Type, command: String, msg: Message, peer: Peer) {
         if msg.target.is_none() {
             self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
@@ -549,11 +558,12 @@ impl RpcDht {
             // });
 
             if let Some(_) = msg.valid_target_key_bytes() {
-                let query = QueryCommand {
+                let query = CommandQuery {
+                    rid: msg.get_request_id(),
                     ty,
                     command,
                     node: peer.clone(),
-                    target: msg.target.clone(),
+                    target: msg.target.expect("s.a"),
                     value: msg.value,
                 };
                 self.queued_events.push_back(RpcDhtEvent::RequestResult(Ok(
@@ -655,6 +665,23 @@ impl RpcDht {
             }
             self.io.response(msg, None, None, peer)
         }
+    }
+
+    /// Reply to a custom command query.
+    pub fn reply_ok(&mut self, query: CommandQuery) {
+        self.reply_(query, Option::<&str>::None)
+    }
+
+    /// Reply to a custom command query with an error message
+    pub fn reply_err(&mut self, query: CommandQuery, err: impl Into<String>) {
+        self.reply_(query, Some(err))
+    }
+
+    pub fn reply_(&mut self, query: CommandQuery, err: Option<impl Into<String>>) {
+        let key = KeyBytes::new(query.target.as_slice());
+        let closer_nodes = self.closer_nodes(&key, 20);
+
+        unimplemented!()
     }
 
     fn reply(
@@ -907,6 +934,8 @@ pub struct Node {
     pub to: Option<SocketAddr>,
     /// When a new ping is due
     pub next_ping: Instant,
+    /// Known referrers available for holepunching
+    pub referrers: Vec<SocketAddr>,
 }
 
 impl Peer {
@@ -974,7 +1003,7 @@ pub enum RequestOk {
     /// Custom commands are not automatically replied to and need to be answered manually
     CustomCommandRequest {
         /// The query we received and need to respond to
-        query: QueryCommand,
+        query: CommandQuery,
     },
 }
 
@@ -1013,6 +1042,14 @@ pub enum ResponseOk {
 pub enum ResponseError {
     /// We received a bad pong to our ping request
     InvalidPong(Peer),
+}
+
+pub struct ResponseBuilder {}
+
+impl ResponseBuilder {
+    pub fn into_error(self, err: impl Into<String>) {}
+
+    pub fn into_resp(self, value: Vec<u8>) {}
 }
 
 #[inline]

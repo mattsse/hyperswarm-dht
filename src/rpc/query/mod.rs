@@ -201,14 +201,19 @@ pub enum QueryPoolState<'a> {
 
 #[derive(Debug)]
 pub struct QueryStream {
+    /// identifier for this stream
     id: QueryId,
     /// The permitted parallelism, i.e. number of pending results.
     parallelism: NonZeroUsize,
     /// The peer iterator that drives the query state.
     peer_iter: QueryPeerIter,
+    /// The rpc command of this stream
     cmd: Command,
+    /// Stats about this query
     stats: QueryStats,
+    /// Whether this stream should produce rpc messages of type [`Type::Query`] or [`Type::Update`]
     ty: QueryType,
+    /// The value to include in each message
     value: Option<Vec<u8>>,
     /// The inner query state.
     pub inner: QueryTable,
@@ -503,8 +508,11 @@ pub enum QueryEvent {
     },
 }
 
+/// Represents an incoming query with a custom command.
 #[derive(Debug, Clone)]
-pub struct QueryCommand {
+pub struct CommandQuery {
+    /// The Id of the query
+    pub rid: RequestId,
     /// Whether this a query/update request
     pub ty: Type,
     /// Command def
@@ -513,9 +521,15 @@ pub struct QueryCommand {
     // TODO change to `node`?
     pub node: Peer,
     /// the query/update target (32 byte target)
-    pub target: Option<Vec<u8>>,
+    pub target: Vec<u8>,
     /// the query/update payload decoded with the inputEncoding
     pub value: Option<Vec<u8>>,
+}
+
+impl CommandQuery {
+    pub fn into_err(self, err: impl Into<String>) {
+        unimplemented!()
+    }
 }
 
 /// The result of a `Query`.
