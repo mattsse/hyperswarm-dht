@@ -36,16 +36,14 @@ use crate::{
         },
     },
 };
+use ed25519_dalek::PublicKey;
+use std::convert::{TryFrom, TryInto};
 
 pub mod io;
 mod jobs;
 pub mod message;
 pub mod protocol;
 pub mod query;
-
-/// An identifier for a node participating in the DHT.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct NodeId(pub [u8; 32]);
 
 pub struct RpcDht {
     /// Identifier of this node
@@ -921,6 +919,38 @@ impl PeerId {
 impl Borrow<[u8]> for PeerId {
     fn borrow(&self) -> &[u8] {
         &self.id
+    }
+}
+
+// TODO change : PeerId, Query::Target, Message::Id
+
+/// An identifier for a node participating in the DHT.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct IdBytes(pub [u8; 32]);
+
+impl Borrow<[u8]> for IdBytes {
+    fn borrow(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<&PublicKey> for IdBytes {
+    fn from(key: &PublicKey) -> Self {
+        Self(key.to_bytes())
+    }
+}
+
+impl From<&GenericArray<u8, U32>> for IdBytes {
+    fn from(digest: &GenericArray<u8, U32>) -> Self {
+        Self(digest.as_slice().try_into().expect("Wrong length"))
+    }
+}
+
+impl TryFrom<&[u8]> for IdBytes {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self(buf.try_into()?))
     }
 }
 
