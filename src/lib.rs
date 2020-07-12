@@ -1,30 +1,43 @@
 #![allow(unused)]
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::pin::Pin;
 use std::time::Duration;
 
 use futures::task::{Context, Poll};
 use futures::Stream;
 
-use crate::dht_proto::PeersInput;
+use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::kbucket::KBucketsTable;
 use crate::peers::{PeersCodec, PeersEncoding};
-use crate::rpc::query::{QueryCommand, QueryId};
-use crate::rpc::{DhtConfig, PeerId, Response, RpcDht};
+use crate::rpc::message::Type;
+use crate::rpc::query::{CommandQuery, QueryId};
+use crate::rpc::{DhtConfig, IdBytes, PeerId, Response, RpcDht};
 use ed25519_dalek::PublicKey;
 use fnv::FnvHashMap;
+use lru_time_cache::LruCache;
 use prost::Message;
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use std::convert::{TryFrom, TryInto};
 
 mod dht_proto {
+    use prost::Message;
     include!(concat!(env!("OUT_DIR"), "/dht_pb.rs"));
+
+    #[inline]
+    pub fn encode_input(peers: &PeersInput) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(peers.encoded_len());
+        // vec has sufficient capacity up to usize::MAX
+        peers.encode(&mut buf).unwrap();
+        buf
+    }
 }
 
 pub mod crypto;
 pub mod kbucket;
 pub mod peers;
+// pub mod record;
 pub mod rpc;
 pub mod stores;
 
@@ -44,6 +57,8 @@ pub struct HyperDht {
     queries: FnvHashMap<QueryId, QueryStreamType>,
     inner: RpcDht, // TODO map between queries and stores.
     adaptive: bool,
+    // id -> SmallVec<SocketAddr>
+    peers: LruCache<String, String>,
 }
 
 impl HyperDht {
@@ -57,11 +72,14 @@ impl HyperDht {
             adaptive: config.adaptive,
             queries: Default::default(),
             inner: RpcDht::with_config(config).await?,
+            // peer cache with 25 min timeout
+            peers: LruCache::with_expiry_duration_and_capacity(Duration::from_secs(60 * 25),
+                                                               1000),
         })
     }
 
-    /// Handle an incoming request for the registered commands
-    fn on_command(&mut self, q: QueryCommand) {
+    /// Handle an incoming requests for the registered commands
+    fn on_command(&mut self, q: CommandQuery) {
         // TODO decode q.value and reply
         match q.command.as_str() {
             MUTABLE_STORE_CMD => {}
@@ -73,7 +91,39 @@ impl HyperDht {
         }
     }
 
-    fn on_peers(&mut self) {
+    /// Callback for an incoming `peers` command query
+    fn on_peers(&mut self, query: CommandQuery) {
+        // decode the received value
+        if let Some(ref val) = query.value {
+            if let Ok(peer) = PeersInput::decode(&**val) {
+                // callback
+                let port = peer
+                    .port
+                    .and_then(|port| u16::try_from(port).ok())
+                    .unwrap_or_else(|| query.node.addr.port());
+                if let IpAddr::V4(host) = query.node.addr.ip() {
+                    let from = SocketAddr::V4(SocketAddrV4::new(host, port));
+
+                    let remote_record = from.encode();
+                    if remote_record.is_empty() {
+                        return;
+                    }
+
+                    if query.ty == Type::Query {}
+
+                    if peer.unannounce.unwrap_or_default() {
+                        // remove the record
+                    } else {
+                        // add the new record
+                    }
+                }
+
+                // self.inner.repl
+                // 1. call js onpeers here
+                // 2. reply with closest nodes
+            }
+        }
+
         unimplemented!()
     }
 
@@ -86,11 +136,7 @@ impl HyperDht {
             local_address: opts.local_addr_encoded(),
             unannounce: None,
         };
-
-        let mut buf = Vec::with_capacity(peers.encoded_len());
-
-        // vec has sufficient capacity up to usize::MAX
-        peers.encode(&mut buf).unwrap();
+        let buf = encode_input(&peers);
 
         let id = self
             .inner
@@ -108,11 +154,7 @@ impl HyperDht {
             local_address: opts.local_addr_encoded(),
             unannounce: None,
         };
-
-        let mut buf = Vec::with_capacity(peers.encoded_len());
-
-        // vec has sufficient capacity up to usize::MAX
-        peers.encode(&mut buf).unwrap();
+        let buf = encode_input(&peers);
 
         let id = self.inner.query_and_update(
             PEERS_CMD,
@@ -131,11 +173,7 @@ impl HyperDht {
             local_address: opts.local_addr_encoded(),
             unannounce: Some(true),
         };
-
-        let mut buf = Vec::with_capacity(peers.encoded_len());
-
-        // vec has sufficient capacity up to usize::MAX
-        peers.encode(&mut buf).unwrap();
+        let buf = encode_input(&peers);
 
         let id = self
             .inner
@@ -180,6 +218,16 @@ impl From<&PublicKey> for QueryOpts {
     }
 }
 
+impl From<&GenericArray<u8, U32>> for QueryOpts {
+    fn from(digest: &GenericArray<u8, U32>) -> Self {
+        Self {
+            topic: digest.as_slice().try_into().expect("Wrong length"),
+            port: None,
+            local_addr: None,
+        }
+    }
+}
+
 impl From<[u8; 32]> for QueryOpts {
     fn from(topic: [u8; 32]) -> Self {
         Self {
@@ -200,6 +248,12 @@ impl TryFrom<&[u8]> for QueryOpts {
             local_addr: None,
         })
     }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum CacheKey {
+    Local { id: IdBytes, record: [u8; 2] },
+    Remote(IdBytes),
 }
 
 // TODO add actual types

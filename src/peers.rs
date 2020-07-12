@@ -1,10 +1,12 @@
 use std::convert::{TryFrom, TryInto};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use crate::kbucket::{self, EntryView, KeyBytes};
 use crate::rpc::{Node, Peer, PeerId};
+use futures::io::Error;
+use futures_codec::Encoder;
 
 #[derive(Debug, Clone, Default)]
 pub struct PeersCodec {
@@ -123,6 +125,26 @@ impl PeersEncoding for SocketAddr {
     }
 }
 
-fn decode_local(perfix: impl AsRef<[u8]>, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
-    unimplemented!()
+/// Decode local peers from a buffer.
+fn decode_local(local: &SocketAddrV4, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
+    let buf = buf.as_ref();
+    if buf.len() & 3 == 0 {
+        return vec![];
+    }
+
+    let octets = local.ip().octets();
+    let mut peers = Vec::with_capacity(buf.len() / 4);
+
+    for i in (0..buf.len()).step_by(4) {
+        if let Ok(port) = buf[i + 2..i + 4].try_into() {
+            let port = u16::from_be_bytes(port);
+            peers.push(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(octets[0], octets[1], buf[i], buf[i + 1]),
+                port,
+            )))
+        } else {
+            return vec![];
+        }
+    }
+    peers
 }
