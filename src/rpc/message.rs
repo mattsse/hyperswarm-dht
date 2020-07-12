@@ -15,7 +15,7 @@ use crate::kbucket;
 use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::CommandQuery;
-use crate::rpc::{Peer, PeerId, RequestId};
+use crate::rpc::{IdBytes, Peer, PeerId, RequestId};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Holepunch {
@@ -104,10 +104,10 @@ impl Message {
         self.r#type == Type::Update.id()
     }
 
-    fn valid_key_bytes(key: Option<&Vec<u8>>) -> Option<KeyBytes> {
+    fn valid_key_bytes(key: Option<&Vec<u8>>) -> Option<IdBytes> {
         if let Some(id) = key {
             if id.len() == 32 {
-                return Some(KeyBytes::new(id.as_slice()));
+                return Some(IdBytes::try_from(id.as_slice()).expect("s.a."));
             }
         }
         None
@@ -166,8 +166,8 @@ impl Message {
     }
 
     pub(crate) fn key(&self, peer: &Peer) -> Option<kbucket::Key<PeerId>> {
-        self.valid_id()
-            .map(|id| kbucket::Key::new(PeerId::new(peer.addr, id.to_vec())))
+        self.valid_id_bytes()
+            .map(|id| kbucket::Key::new(PeerId::new(peer.addr, id)))
     }
 
     /// Decode the `to` field into `PeerId`
@@ -199,21 +199,12 @@ impl Message {
         Ok(())
     }
 
-    pub(crate) fn valid_id_key_bytes(&self) -> Option<KeyBytes> {
+    pub(crate) fn valid_id_bytes(&self) -> Option<IdBytes> {
         Self::valid_key_bytes(self.id.as_ref())
     }
 
-    pub(crate) fn valid_target_key_bytes(&self) -> Option<KeyBytes> {
+    pub(crate) fn valid_target_id_bytes(&self) -> Option<IdBytes> {
         Self::valid_key_bytes(self.target.as_ref())
-    }
-
-    pub(crate) fn valid_id(&self) -> Option<&[u8]> {
-        if let Some(ref id) = self.id {
-            if id.len() == 32 {
-                return Some(id.as_slice());
-            }
-        }
-        None
     }
 
     /// Check that the len of the key is exact 32 bytes

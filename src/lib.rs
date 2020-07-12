@@ -73,8 +73,7 @@ impl HyperDht {
             queries: Default::default(),
             inner: RpcDht::with_config(config).await?,
             // peer cache with 25 min timeout
-            peers: LruCache::with_expiry_duration_and_capacity(Duration::from_secs(60 * 25),
-                                                               1000),
+            peers: LruCache::with_expiry_duration_and_capacity(Duration::from_secs(60 * 25), 1000),
         })
     }
 
@@ -140,7 +139,7 @@ impl HyperDht {
 
         let id = self
             .inner
-            .query(PEERS_CMD, kbucket::Key::new(opts.topic.to_vec()), Some(buf));
+            .query(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
         self.queries.insert(id, QueryStreamType::LookUp(vec![]));
         id
     }
@@ -156,11 +155,9 @@ impl HyperDht {
         };
         let buf = encode_input(&peers);
 
-        let id = self.inner.query_and_update(
-            PEERS_CMD,
-            kbucket::Key::new(opts.topic.to_vec()),
-            Some(buf),
-        );
+        let id = self
+            .inner
+            .query_and_update(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
         self.queries.insert(id, QueryStreamType::Announce(vec![]));
         id
     }
@@ -177,7 +174,7 @@ impl HyperDht {
 
         let id = self
             .inner
-            .update(PEERS_CMD, kbucket::Key::new(opts.topic.to_vec()), Some(buf));
+            .update(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
         self.queries.insert(id, QueryStreamType::UnAnnounce(vec![]));
         id
     }
@@ -195,7 +192,7 @@ impl Stream for HyperDht {
 #[derive(Debug, Clone)]
 pub struct QueryOpts {
     /// The topic to announce
-    pub topic: [u8; 32],
+    pub topic: IdBytes,
     /// Explicitly set the port you want to announce. Per default the UDP socket port is announced.
     pub port: Option<u32>,
     /// Optionally announce a LAN address as well. Only people with the same public IP as you will get these when doing a lookup
@@ -211,7 +208,7 @@ impl QueryOpts {
 impl From<&PublicKey> for QueryOpts {
     fn from(key: &PublicKey) -> Self {
         Self {
-            topic: key.to_bytes(),
+            topic: key.into(),
             port: None,
             local_addr: None,
         }
@@ -228,8 +225,8 @@ impl From<&GenericArray<u8, U32>> for QueryOpts {
     }
 }
 
-impl From<[u8; 32]> for QueryOpts {
-    fn from(topic: [u8; 32]) -> Self {
+impl From<IdBytes> for QueryOpts {
+    fn from(topic: IdBytes) -> Self {
         Self {
             topic,
             port: None,

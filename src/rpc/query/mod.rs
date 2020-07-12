@@ -7,6 +7,7 @@ use futures::task::Poll;
 use log::debug;
 use wasm_timer::Instant;
 
+use crate::rpc::IdBytes;
 use crate::{
     kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE},
     rpc::{
@@ -25,7 +26,7 @@ pub mod table;
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 #[derive(Debug)]
 pub struct QueryPool {
-    local_id: Key<Vec<u8>>,
+    local_id: Key<IdBytes>,
     queries: FnvHashMap<QueryId, QueryStream>,
     config: QueryConfig,
     next_id: usize,
@@ -62,7 +63,7 @@ impl Default for QueryConfig {
 
 impl QueryPool {
     /// Creates a new `QueryPool` with the given configuration.
-    pub fn new(local_id: Key<Vec<u8>>, config: QueryConfig) -> Self {
+    pub fn new(local_id: Key<IdBytes>, config: QueryConfig) -> Self {
         Self {
             local_id,
             next_id: 0,
@@ -97,7 +98,7 @@ impl QueryPool {
         cmd: T,
         peers: I,
         query_type: QueryType,
-        target: Key<Vec<u8>>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
         bootstrap: S,
     ) -> QueryId
@@ -225,8 +226,8 @@ impl QueryStream {
         cmd: T,
         parallelism: NonZeroUsize,
         ty: QueryType,
-        local_id: Key<Vec<u8>>,
-        target: Key<Vec<u8>>,
+        local_id: Key<IdBytes>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
         peers: I,
         bootstrap: S,
@@ -252,7 +253,7 @@ impl QueryStream {
         &self.cmd
     }
 
-    pub fn target(&self) -> &Key<Vec<u8>> {
+    pub fn target(&self) -> &Key<IdBytes> {
         self.inner.target()
     }
     pub fn value(&self) -> Option<&Vec<u8>> {
@@ -314,7 +315,7 @@ impl QueryStream {
             ty: self.ty,
             cmd: self.cmd.clone(),
             to: resp.decode_to_peer(),
-            peer: PeerId::new(peer.addr, resp.id.take().expect("s.a")),
+            peer: PeerId::new(peer.addr, resp.valid_id_bytes().expect("s.a")),
             value: resp.value,
         })
     }
@@ -490,11 +491,11 @@ pub enum QueryEvent {
     Query {
         peer: Peer,
         command: Command,
-        target: Vec<u8>,
+        target: IdBytes,
         value: Option<Vec<u8>>,
     },
     RemoveNode {
-        id: Vec<u8>,
+        id: IdBytes,
     },
     MissingRoundtripToken {
         peer: Peer,
@@ -502,7 +503,7 @@ pub enum QueryEvent {
     Update {
         peer: Peer,
         command: Command,
-        target: Vec<u8>,
+        target: IdBytes,
         value: Option<Vec<u8>>,
         token: Option<Vec<u8>>,
     },
@@ -521,7 +522,7 @@ pub struct CommandQuery {
     // TODO change to `node`?
     pub node: Peer,
     /// the query/update target (32 byte target)
-    pub target: Vec<u8>,
+    pub target: IdBytes,
     /// the query/update payload decoded with the inputEncoding
     pub value: Option<Vec<u8>>,
 }

@@ -8,18 +8,18 @@ use wasm_timer::Instant;
 use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
 use crate::rpc::message::Message;
 use crate::rpc::query::fixed::FixedPeersIter;
-use crate::rpc::{self, PeerId};
+use crate::rpc::{self, IdBytes, PeerId};
 
 #[derive(Debug)]
 pub struct QueryTable {
-    id: Key<Vec<u8>>,
-    target: Key<Vec<u8>>,
+    id: Key<IdBytes>,
+    target: Key<IdBytes>,
     /// The closest peers to the target.
     peers: FnvHashMap<Key<PeerId>, PeerState>,
 }
 
 impl QueryTable {
-    pub fn new<T>(id: Key<Vec<u8>>, target: Key<Vec<u8>>, known_closest_peers: T) -> Self
+    pub fn new<T>(id: Key<IdBytes>, target: Key<IdBytes>, known_closest_peers: T) -> Self
     where
         T: IntoIterator<Item = Key<PeerId>>,
     {
@@ -41,7 +41,7 @@ impl QueryTable {
         &mut self.peers
     }
 
-    pub fn target(&self) -> &Key<Vec<u8>> {
+    pub fn target(&self) -> &Key<IdBytes> {
         &self.target
     }
 

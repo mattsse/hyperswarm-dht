@@ -36,7 +36,7 @@ use crate::{
         },
     },
 };
-use ed25519_dalek::PublicKey;
+use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
 use std::convert::{TryFrom, TryInto};
 
 pub mod io;
@@ -47,9 +47,9 @@ pub mod query;
 
 pub struct RpcDht {
     /// Identifier of this node
-    id: Key<Vec<u8>>,
+    id: Key<IdBytes>,
     // TODO change Key to Key<PeerId>
-    kbuckets: KBucketsTable<kbucket::Key<Vec<u8>>, Node>,
+    kbuckets: KBucketsTable<Key<IdBytes>, Node>,
     io: IoHandler<QueryId>,
     bootstrap_job: PeriodicJob,
     ping_job: PeriodicJob,
@@ -68,7 +68,7 @@ pub struct RpcDht {
 #[derive(Debug)]
 pub struct DhtConfig {
     kbucket_pending_timeout: Duration,
-    local_id: Option<Vec<u8>>,
+    local_id: Option<IdBytes>,
     commands: HashSet<String>,
     query_config: QueryConfig,
     io_config: IoConfig,
@@ -102,8 +102,8 @@ impl Default for DhtConfig {
 
 impl DhtConfig {
     /// Set the id used to sign the messages explicitly.
-    pub fn set_local_id(mut self, id: Vec<u8>) -> Self {
-        self.local_id = Some(id);
+    pub fn set_local_id(mut self, id: impl Into<IdBytes>) -> Self {
+        self.local_id = Some(id.into());
         self
     }
 
@@ -235,11 +235,7 @@ impl RpcDht {
     ///
     /// If no socket was created within then `DhtConfig`, a new socket at a random port will be created.
     pub async fn with_config(config: DhtConfig) -> std::io::Result<Self> {
-        let local_id = Key::new(config.local_id.unwrap_or_else(|| {
-            let mut local_key = [0u8; 32];
-            fill_random_bytes(&mut local_key);
-            local_key.to_vec()
-        }));
+        let local_id = Key::new(config.local_id.unwrap_or_else(|| IdBytes::random()));
 
         let query_id = if config.ephemeral {
             None
@@ -305,7 +301,7 @@ impl RpcDht {
         self.io.query(
             Command::Ping,
             None,
-            Some(peer.id.clone()),
+            Some(peer.id.clone().to_vec()),
             Peer::from(peer.addr),
             // TODO refactor ping handling, no query id required
             self.queries.next_query_id(),
@@ -340,7 +336,7 @@ impl RpcDht {
     pub fn query_and_update(
         &mut self,
         cmd: impl Into<Command>,
-        target: Key<Vec<u8>>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
     ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::QueryUpdate)
@@ -349,7 +345,7 @@ impl RpcDht {
     fn run_command(
         &mut self,
         cmd: impl Into<Command>,
-        target: Key<Vec<u8>>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
         query_type: QueryType,
     ) -> QueryId {
@@ -384,7 +380,7 @@ impl RpcDht {
     pub fn query(
         &mut self,
         cmd: impl Into<Command>,
-        target: Key<Vec<u8>>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
     ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::Query)
@@ -393,7 +389,7 @@ impl RpcDht {
     pub fn update(
         &mut self,
         cmd: impl Into<Command>,
-        target: Key<Vec<u8>>,
+        target: Key<IdBytes>,
         value: Option<Vec<u8>>,
     ) -> QueryId {
         self.run_command(cmd, target, value, QueryType::Update)
@@ -401,12 +397,11 @@ impl RpcDht {
 
     fn add_node(
         &mut self,
-        id: &[u8],
+        id: IdBytes,
         peer: Peer,
         roundtrip_token: Option<Vec<u8>>,
         to: Option<SocketAddr>,
     ) {
-        let id = id.to_vec();
         let key = kbucket::Key::new(id);
         match self.kbuckets.entry(&key) {
             Entry::Present(mut entry, _) => {
@@ -452,10 +447,9 @@ impl RpcDht {
     /// not even pending insertion.
     pub fn remove_peer(
         &mut self,
-        peer: Vec<u8>,
-    ) -> Option<kbucket::EntryView<kbucket::Key<Vec<u8>>, Node>> {
-        let key = kbucket::Key::new(peer);
-        match self.kbuckets.entry(&key) {
+        key: &Key<IdBytes>,
+    ) -> Option<kbucket::EntryView<kbucket::Key<IdBytes>, Node>> {
+        match self.kbuckets.entry(key) {
             kbucket::Entry::Present(entry, _) => Some(entry.remove()),
             kbucket::Entry::Pending(entry, _) => Some(entry.remove()),
             kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => None,
@@ -465,7 +459,7 @@ impl RpcDht {
     fn remove_node(
         &mut self,
         peer: &Peer,
-    ) -> Option<kbucket::EntryView<kbucket::Key<Vec<u8>>, Node>> {
+    ) -> Option<kbucket::EntryView<kbucket::Key<IdBytes>, Node>> {
         let id = self
             .kbuckets
             .iter()
@@ -479,7 +473,7 @@ impl RpcDht {
             .next();
 
         if let Some(id) = id {
-            self.remove_peer(id.into_preimage())
+            self.remove_peer(&id)
         } else {
             None
         }
@@ -487,7 +481,7 @@ impl RpcDht {
 
     /// Handle a response for our Ping command
     fn on_pong(&mut self, msg: Message, peer: Peer) {
-        if let Some(id) = msg.id {
+        if let Some(id) = msg.valid_id_bytes() {
             match self.kbuckets.entry(&Key::new(id)) {
                 Entry::Present(mut entry, _) => {
                     entry.value().next_ping = Instant::now() + self.ping_job.interval;
@@ -555,13 +549,13 @@ impl RpcDht {
             //     })
             // });
 
-            if let Some(_) = msg.valid_target_key_bytes() {
+            if let Some(_) = msg.valid_target_id_bytes() {
                 let query = CommandQuery {
                     rid: msg.get_request_id(),
                     ty,
                     command,
                     node: peer.clone(),
-                    target: msg.target.expect("s.a"),
+                    target: msg.valid_id_bytes().expect("s.a"),
                     value: msg.value,
                 };
                 self.queued_events.push_back(RpcDhtEvent::RequestResult(Ok(
@@ -583,7 +577,7 @@ impl RpcDht {
     ///
     /// Eventually send a response.
     fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) {
-        if let Some(id) = msg.valid_id() {
+        if let Some(id) = msg.valid_id_bytes() {
             self.add_node(id, peer.clone(), None, msg.decode_to_peer());
         }
 
@@ -602,7 +596,7 @@ impl RpcDht {
                 )));
                 return;
             }
-            if let Some(key) = msg.valid_target_key_bytes() {
+            if let Some(key) = msg.valid_target_id_bytes() {
                 self.reply(
                     msg,
                     peer.clone(),
@@ -633,7 +627,7 @@ impl RpcDht {
     }
 
     fn on_findnode(&mut self, msg: Message, peer: Peer) {
-        if let Some(key) = msg.valid_id_key_bytes() {
+        if let Some(key) = msg.valid_id_bytes() {
             let closer_nodes = self.closer_nodes(&key, 20);
             self.io
                 .response(msg, None, Some(closer_nodes), peer.clone());
@@ -676,8 +670,8 @@ impl RpcDht {
     }
 
     pub fn reply_(&mut self, query: CommandQuery, err: Option<impl Into<String>>) {
-        let key = KeyBytes::new(query.target.as_slice());
-        let closer_nodes = self.closer_nodes(&key, 20);
+        // let key = KeyBytes::new(query.target.as_slice());
+        // let closer_nodes = self.closer_nodes(&key, 20);
 
         unimplemented!()
     }
@@ -687,7 +681,7 @@ impl RpcDht {
         msg: Message,
         peer: Peer,
         res: Result<Option<Vec<u8>>, String>,
-        key: &KeyBytes,
+        key: &IdBytes,
     ) {
         let closer_nodes = self.closer_nodes(key, 20);
         match res {
@@ -703,10 +697,10 @@ impl RpcDht {
     }
 
     /// Get the `num` closest nodes in the bucket.
-    fn closer_nodes(&mut self, key: &KeyBytes, num: usize) -> Vec<u8> {
+    fn closer_nodes(&mut self, key: &IdBytes, num: usize) -> Vec<u8> {
         let nodes = self
             .kbuckets
-            .closest(key)
+            .closest(&KeyBytes::new(key.clone()))
             .take(usize::from(K_VALUE))
             .collect::<Vec<_>>();
         PeersEncoding::encode(&nodes)
@@ -768,7 +762,7 @@ impl RpcDht {
                 self.io.query(command, Some(target), value, peer, id);
             }
             QueryEvent::RemoveNode { id } => {
-                self.remove_peer(id);
+                self.remove_peer(&Key::new(id));
             }
             QueryEvent::MissingRoundtripToken { .. } => {
                 // TODO
@@ -795,13 +789,13 @@ impl RpcDht {
         for (peer, state) in result.peers {
             match state {
                 PeerState::Failed => {
-                    self.remove_peer(peer.id);
+                    self.remove_peer(&Key::new(peer.id));
                 }
                 PeerState::Succeeded {
                     roundtrip_token,
                     to,
                 } => {
-                    self.add_node(&peer.id, Peer::from(peer.addr), Some(roundtrip_token), to);
+                    self.add_node(peer.id, Peer::from(peer.addr), Some(roundtrip_token), to);
                 }
                 _ => {}
             }
@@ -903,30 +897,48 @@ impl Into<Holepunch> for SocketAddr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq)]
 pub struct PeerId {
     pub addr: SocketAddr,
-    // TODO change to kbucket::Key?
-    pub id: Vec<u8>,
+    pub id: IdBytes,
 }
 
 impl PeerId {
-    fn new(addr: SocketAddr, id: Vec<u8>) -> Self {
+    fn new(addr: SocketAddr, id: IdBytes) -> Self {
         Self { addr, id }
     }
 }
 
 impl Borrow<[u8]> for PeerId {
     fn borrow(&self) -> &[u8] {
-        &self.id
+        self.id.borrow()
     }
 }
 
 // TODO change : PeerId, Query::Target, Message::Id
 
-/// An identifier for a node participating in the DHT.
+/// An 32 byte identifier for a node participating in the DHT.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct IdBytes(pub [u8; 32]);
+pub struct IdBytes(pub [u8; PUBLIC_KEY_LENGTH]);
+
+impl IdBytes {
+    /// Create new 32 byte array with random bytes.
+    pub fn random() -> Self {
+        let mut key = [0u8; 32];
+        fill_random_bytes(&mut key);
+        Self(key)
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+}
+
+impl PartialEq<Vec<u8>> for IdBytes {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        &self.0[..] == other.as_slice()
+    }
+}
 
 impl Borrow<[u8]> for IdBytes {
     fn borrow(&self) -> &[u8] {

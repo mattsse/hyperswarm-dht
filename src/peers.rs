@@ -4,9 +4,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use bytes::{Buf, BufMut, BytesMut};
 
 use crate::kbucket::{self, EntryView, KeyBytes};
-use crate::rpc::{Node, Peer, PeerId};
+use crate::rpc::{IdBytes, Node, Peer, PeerId};
 use futures::io::Error;
 use futures_codec::Encoder;
+use smallvec::alloc::borrow::Borrow;
 
 #[derive(Debug, Clone, Default)]
 pub struct PeersCodec {
@@ -72,7 +73,7 @@ impl TryFrom<&[u8]> for PeerId {
         }
 
         Ok(PeerId {
-            id: buf[0..32].to_vec(),
+            id: IdBytes::try_from(&buf[0..32]).expect("s.a."),
             addr: decode_addr(&buf[32..]).expect("s.a."),
         })
     }
@@ -90,7 +91,7 @@ pub fn decode_peers(buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
     peers
 }
 
-impl PeersEncoding for Vec<EntryView<kbucket::Key<Vec<u8>>, Node>> {
+impl PeersEncoding for Vec<EntryView<kbucket::Key<IdBytes>, Node>> {
     fn encode(&self) -> Vec<u8> {
         // TODO refactor
         let mut buf = Vec::with_capacity(self.len() * (32 + 6));
@@ -98,7 +99,7 @@ impl PeersEncoding for Vec<EntryView<kbucket::Key<Vec<u8>>, Node>> {
         for peer in self.iter() {
             let addr = &peer.node.value.addr;
             if let IpAddr::V4(ip) = addr.ip() {
-                buf.extend_from_slice(&peer.node.key.preimage());
+                buf.extend_from_slice(peer.node.key.preimage().borrow());
                 buf.extend_from_slice(&ip.octets()[..]);
                 buf.extend_from_slice(&addr.port().to_be_bytes()[..]);
             }

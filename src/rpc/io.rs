@@ -20,6 +20,7 @@ use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
 
+use crate::rpc::IdBytes;
 use crate::{
     kbucket::Key,
     kbucket::KeyBytes,
@@ -116,7 +117,7 @@ impl<TUserData> MessageEvent<TUserData> {
 }
 
 pub struct IoHandler<TUserData> {
-    id: Option<Key<Vec<u8>>>,
+    id: Option<Key<IdBytes>>,
     socket: UdpFramed<DhtRpcCodec>,
     /// Messages to send
     pending_send: VecDeque<MessageEvent<TUserData>>,
@@ -145,7 +146,7 @@ where
     TUserData: fmt::Debug + Clone,
 {
     pub fn new(
-        id: Option<Key<Vec<u8>>>,
+        id: Option<Key<IdBytes>>,
         socket: UdpSocket,
         config: IoConfig,
     ) -> IoHandler<TUserData> {
@@ -181,7 +182,7 @@ where
     }
 
     pub(crate) fn msg_id(&self) -> Option<Vec<u8>> {
-        self.id.as_ref().map(|k| k.preimage().clone())
+        self.id.as_ref().map(|k| k.preimage().clone().to_vec())
     }
 
     /// Generate the next request id
@@ -287,7 +288,7 @@ where
     pub fn query(
         &mut self,
         cmd: Command,
-        target: Option<Vec<u8>>,
+        target: Option<IdBytes>,
         value: Option<Vec<u8>>,
         peer: Peer,
         user_data: TUserData,
@@ -298,7 +299,7 @@ where
             rid: 0,
             to: Some(peer.encode()),
             id: self.msg_id(),
-            target,
+            target: target.map(|x| x.to_vec()),
             closer_nodes: None,
             roundtrip_token: None,
             command: Some(cmd.to_string()),
@@ -370,7 +371,7 @@ where
     pub fn update(
         &mut self,
         cmd: Command,
-        target: Option<Vec<u8>>,
+        target: Option<IdBytes>,
         value: Option<Vec<u8>>,
         peer: Peer,
         roundtrip_token: Option<Vec<u8>>,
@@ -383,7 +384,7 @@ where
             rid: 0,
             to: Some(peer.encode()),
             id: self.msg_id(),
-            target,
+            target: target.map(|x| x.to_vec()),
             closer_nodes: None,
             roundtrip_token,
             command: Some(cmd.to_string()),

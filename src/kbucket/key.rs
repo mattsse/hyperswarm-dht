@@ -21,6 +21,7 @@
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
+use crate::rpc::IdBytes;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use sha2::{Digest, Sha256};
 use uint::*;
@@ -88,6 +89,12 @@ impl<T> Key<T> {
 impl<T> Into<KeyBytes> for Key<T> {
     fn into(self) -> KeyBytes {
         self.bytes
+    }
+}
+
+impl From<IdBytes> for Key<IdBytes> {
+    fn from(n: IdBytes) -> Self {
+        Key::new(n)
     }
 }
 
