@@ -10,16 +10,25 @@ use futures::Stream;
 
 use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::kbucket::KBucketsTable;
+use crate::lru::{AddressCache, CacheKey, PeerCache};
 use crate::peers::{PeersCodec, PeersEncoding};
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
 use crate::rpc::{DhtConfig, IdBytes, PeerId, Response, RpcDht};
+use core::cmp;
 use ed25519_dalek::PublicKey;
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 use lru_time_cache::LruCache;
 use prost::Message;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
+use smallvec::alloc::borrow::Borrow;
+use smallvec::alloc::collections::VecDeque;
+use smallvec::SmallVec;
+use std::cmp::Ordering;
 use std::convert::{TryFrom, TryInto};
+use std::hash::Hash;
+use std::mem::take;
+use wasm_timer::Instant;
 
 mod dht_proto {
     use prost::Message;
@@ -38,6 +47,7 @@ pub mod crypto;
 pub mod kbucket;
 pub mod peers;
 // pub mod record;
+pub mod lru;
 pub mod rpc;
 pub mod stores;
 
@@ -54,11 +64,13 @@ const IMMUTABLE_STORE_CMD: &str = "immutable-store";
 const PEERS_CMD: &str = "peers";
 
 pub struct HyperDht {
+    /// The underlying Rpc DHT including IO
+    inner: RpcDht,
+    /// Map to track the queries currently in progress
     queries: FnvHashMap<QueryId, QueryStreamType>,
-    inner: RpcDht, // TODO map between queries and stores.
     adaptive: bool,
-    // id -> SmallVec<SocketAddr>
-    peers: LruCache<String, String>,
+    /// Cache for known peers
+    peers: PeerCache,
 }
 
 impl HyperDht {
@@ -73,7 +85,7 @@ impl HyperDht {
             queries: Default::default(),
             inner: RpcDht::with_config(config).await?,
             // peer cache with 25 min timeout
-            peers: LruCache::with_expiry_duration_and_capacity(Duration::from_secs(60 * 25), 1000),
+            peers: PeerCache::new(1000, Duration::from_secs(60 * 25)),
         })
     }
 
@@ -91,7 +103,7 @@ impl HyperDht {
     }
 
     /// Callback for an incoming `peers` command query
-    fn on_peers(&mut self, query: CommandQuery) {
+    fn on_peers(&mut self, mut query: CommandQuery) {
         // decode the received value
         if let Some(ref val) = query.value {
             if let Ok(peer) = PeersInput::decode(&**val) {
@@ -104,11 +116,73 @@ impl HyperDht {
                     let from = SocketAddr::V4(SocketAddrV4::new(host, port));
 
                     let remote_record = from.encode();
-                    if remote_record.is_empty() {
+
+                    let remote_cache = CacheKey::Remote(query.target.clone());
+
+                    let local = peer.local_address.as_ref().and_then(|l| {
+                        if l.len() == 6 {
+                            let prefix: [u8; 2] = l[0..2].try_into().unwrap();
+                            let suffix: [u8; 4] = l[2..].try_into().unwrap();
+                            Some((
+                                CacheKey::Local {
+                                    id: query.target.clone(),
+                                    prefix,
+                                },
+                                suffix,
+                            ))
+                        } else {
+                            None
+                        }
+                    });
+
+                    if query.ty == Type::Query {
+                        let local_peers = if let Some((local_cache, suffix)) = local {
+                            self.peers.get(&local_cache).and_then(|addrs| {
+                                addrs.iter_locals().map(|locals| {
+                                    locals
+                                        .filter(|s| **s != suffix)
+                                        .flat_map(|s| s.into_iter())
+                                        .cloned()
+                                        .take(32)
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                        } else {
+                            None
+                        };
+
+                        let peers = if let Some(remotes) = self
+                            .peers
+                            .get(&remote_cache)
+                            .and_then(|addrs| addrs.remotes())
+                        {
+                            let num = cmp::min(
+                                remotes.len(),
+                                128 - local_peers.as_ref().map(|l| l.len()).unwrap_or_default(),
+                            );
+                            let mut buf = Vec::with_capacity(num * 6);
+
+                            for addr in remotes.iter().filter(|addr| **addr != from).take(num) {
+                                if let IpAddr::V4(ip) = addr.ip() {
+                                    buf.extend_from_slice(&ip.octets()[..]);
+                                    buf.extend_from_slice(&addr.port().to_be_bytes()[..]);
+                                }
+                            }
+                            Some(buf)
+                        } else {
+                            None
+                        };
+
+                        let output = PeersOutput { peers, local_peers };
+                        let mut buf = Vec::with_capacity(output.encoded_len());
+
+                        // fits safe in vec
+                        output.encode(&mut buf).unwrap();
+                        query.value = Some(buf);
+
+                        self.inner.reply_ok(query);
                         return;
                     }
-
-                    if query.ty == Type::Query {}
 
                     if peer.unannounce.unwrap_or_default() {
                         // remove the record
@@ -247,10 +321,10 @@ impl TryFrom<&[u8]> for QueryOpts {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-enum CacheKey {
-    Local { id: IdBytes, record: [u8; 2] },
-    Remote(IdBytes),
+#[derive(Debug)]
+enum Addresses {
+    Remote(FnvHashSet<SocketAddr>),
+    Local(FnvHashSet<[u8; 4]>),
 }
 
 // TODO add actual types

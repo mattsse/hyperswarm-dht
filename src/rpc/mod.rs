@@ -918,7 +918,7 @@ impl Borrow<[u8]> for PeerId {
 // TODO change : PeerId, Query::Target, Message::Id
 
 /// An 32 byte identifier for a node participating in the DHT.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialOrd, PartialEq, Eq)]
 pub struct IdBytes(pub [u8; PUBLIC_KEY_LENGTH]);
 
 impl IdBytes {
