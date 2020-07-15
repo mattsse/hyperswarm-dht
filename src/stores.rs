@@ -1,6 +1,7 @@
-use crate::rpc::query::QueryId;
 use fnv::FnvHashMap;
 use lru::LruCache;
+
+use crate::rpc::query::QueryId;
 
 pub enum StoredEntry<TVal> {
     Mutable(TVal),

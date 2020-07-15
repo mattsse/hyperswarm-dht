@@ -1,12 +1,14 @@
-use crate::rpc::IdBytes;
-use fnv::FnvHashMap;
-use smallvec::alloc::collections::VecDeque;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::time::Duration;
+
+use fnv::FnvHashMap;
+use smallvec::alloc::collections::VecDeque;
 use wasm_timer::Instant;
+
+use crate::rpc::IdBytes;
 
 #[derive(Debug, Clone)]
 pub enum Address {
@@ -377,8 +379,9 @@ impl PeerCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::SocketAddrV4;
+
+    use super::*;
 
     fn sleep(time: u64) {
         use std::thread;

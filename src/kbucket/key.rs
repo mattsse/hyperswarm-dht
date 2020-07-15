@@ -21,10 +21,11 @@
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
-use crate::rpc::IdBytes;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use sha2::{Digest, Sha256};
 use uint::*;
+
+use crate::rpc::IdBytes;
 
 construct_uint! {
     /// 256-bit unsigned integer.

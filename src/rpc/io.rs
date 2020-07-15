@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use futures::{
 };
 use log::debug;
 use prost::Message as ProtoMessage;
+use rand::Rng;
 use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
@@ -33,8 +35,6 @@ use crate::{
         Peer, RequestId,
     },
 };
-use rand::Rng;
-use std::ops::Deref;
 
 pub const VERSION: u64 = 1;
 

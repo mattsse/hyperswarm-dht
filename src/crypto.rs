@@ -1,8 +1,9 @@
-use crate::rpc::fill_random_bytes;
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
 use blake2::{Blake2b, Blake2s, VarBlake2b};
 use ed25519_dalek::SignatureError;
 pub use ed25519_dalek::{ExpandedSecretKey, Keypair, PublicKey, SecretKey, Signature};
+
+use crate::rpc::fill_random_bytes;
 
 /// VALUE_MAX_SIZE + packet overhead (i.e. the key etc.)
 /// should be less than the network MTU, normally 1400 bytes

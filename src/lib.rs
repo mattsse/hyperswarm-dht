@@ -1,12 +1,25 @@
 #![allow(unused)]
 
+use core::cmp;
+use std::cmp::Ordering;
+use std::convert::{TryFrom, TryInto};
+use std::hash::Hash;
 use std::io;
+use std::mem::take;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::pin::Pin;
 use std::time::Duration;
 
+use ed25519_dalek::PublicKey;
+use fnv::{FnvHashMap, FnvHashSet};
 use futures::task::{Context, Poll};
 use futures::Stream;
+use prost::Message;
+use sha2::digest::generic_array::{typenum::U32, GenericArray};
+use smallvec::alloc::borrow::Borrow;
+use smallvec::alloc::collections::VecDeque;
+use smallvec::SmallVec;
+use wasm_timer::Instant;
 
 use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::kbucket::KBucketsTable;
@@ -15,23 +28,10 @@ use crate::peers::{PeersCodec, PeersEncoding};
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
 use crate::rpc::{DhtConfig, IdBytes, PeerId, Response, RpcDht};
-use core::cmp;
-use ed25519_dalek::PublicKey;
-use fnv::{FnvHashMap, FnvHashSet};
-use lru_time_cache::LruCache;
-use prost::Message;
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use smallvec::alloc::borrow::Borrow;
-use smallvec::alloc::collections::VecDeque;
-use smallvec::SmallVec;
-use std::cmp::Ordering;
-use std::convert::{TryFrom, TryInto};
-use std::hash::Hash;
-use std::mem::take;
-use wasm_timer::Instant;
 
 mod dht_proto {
     use prost::Message;
+
     include!(concat!(env!("OUT_DIR"), "/dht_pb.rs"));
 
     #[inline]

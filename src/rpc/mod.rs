@@ -2,6 +2,7 @@
 
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::{TryFrom, TryInto};
 use std::hash::Hash;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::num::NonZeroUsize;
@@ -10,6 +11,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
 use fnv::FnvHashSet;
 use futures::{
     stream::Stream,
@@ -36,8 +38,6 @@ use crate::{
         },
     },
 };
-use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
-use std::convert::{TryFrom, TryInto};
 
 pub mod io;
 mod jobs;
