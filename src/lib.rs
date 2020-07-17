@@ -52,7 +52,7 @@ pub mod peers;
 // pub mod record;
 pub mod lru;
 pub mod rpc;
-pub mod stores;
+pub mod store;
 
 const EPH_AFTER: u64 = 1000 * 60 * 20;
 
@@ -268,18 +268,63 @@ impl HyperDht {
 
         let id = self
             .inner
-            .update(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
-        self.queries.insert(id, QueryStreamType::UnAnnounce(vec![]));
+            .update(PEERS_CMD, kbucket::Key::new(opts.topic.clone()), Some(buf));
+        self.queries.insert(
+            id,
+            QueryStreamType::UnAnnounce(QueryStreamInner::new(opts.topic, opts.local_addr)),
+        );
         id
+    }
+
+    fn inject_response(&mut self, resp: Response) {
+        if let Some(query) = self.queries.get_mut(&resp.query) {
+            query.inject_response(resp)
+        }
+    }
+
+    // A query was completed
+    fn query_finished(&mut self, id: QueryId) {
+        if let Some(query) = self.queries.remove(&id) {
+            self.queued_events.push_back(query.finalize())
+        }
     }
 }
 
 impl Stream for HyperDht {
-    type Item = ();
+    type Item = HyperDhtEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // delegate query response to on peers
-        unimplemented!()
+        let pin = self.get_mut();
+
+        loop {
+            // Drain queued events first.
+            if let Some(event) = pin.queued_events.pop_front() {
+                return Poll::Ready(Some(event));
+            }
+
+            loop {
+                match Stream::poll_next(Pin::new(&mut pin.inner), cx) {
+                    Poll::Ready(Some(ev)) => match ev {
+                        RpcDhtEvent::RequestResult(Ok(RequestOk::CustomCommandRequest {
+                            query,
+                        })) => pin.on_command(query),
+                        RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))) => {
+                            pin.inject_response(resp)
+                        }
+                        RpcDhtEvent::QueryResult { id, cmd, stats } => pin.query_finished(id),
+                        _ => {}
+                    },
+                    _ => break,
+                }
+            }
+
+            // No immediate event was produced as a result of the DHT.
+            // If no new events have been queued either, signal `Pending` to
+            // be polled again later.
+            if pin.queued_events.is_empty() {
+                return Poll::Pending;
+            }
+        }
     }
 }
 
