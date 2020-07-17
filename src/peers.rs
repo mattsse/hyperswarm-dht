@@ -127,7 +127,7 @@ impl PeersEncoding for SocketAddr {
 }
 
 /// Decode local peers from a buffer.
-fn decode_local(local: &SocketAddrV4, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
+pub fn decode_local_peers(local: &SocketAddrV4, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
     let buf = buf.as_ref();
     if buf.len() & 3 == 0 {
         return vec![];
