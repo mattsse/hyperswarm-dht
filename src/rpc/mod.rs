@@ -661,19 +661,24 @@ impl RpcDht {
 
     /// Reply to a custom command query.
     pub fn reply_ok(&mut self, query: CommandQuery) {
-        self.reply_(query, Option::<&str>::None)
+        self.reply_query(query, Option::<String>::None)
     }
 
     /// Reply to a custom command query with an error message
     pub fn reply_err(&mut self, query: CommandQuery, err: impl Into<String>) {
-        self.reply_(query, Some(err))
+        self.reply_query(query, Some(err.into()))
     }
 
-    pub fn reply_(&mut self, query: CommandQuery, err: Option<impl Into<String>>) {
-        // let key = KeyBytes::new(query.target.as_slice());
-        // let closer_nodes = self.closer_nodes(&key, 20);
-
-        unimplemented!()
+    fn reply_query(&mut self, query: CommandQuery, err: Option<String>) {
+        let closer_nodes = self.closer_nodes(&query.target, usize::from(K_VALUE));
+        let peer = query.node.clone();
+        if let Some(err) = err {
+            self.io
+                .error(query.into(), err, None, Some(closer_nodes), peer);
+        } else {
+            self.io
+                .response(query.into(), None, Some(closer_nodes), peer);
+        }
     }
 
     fn reply(
@@ -691,7 +696,7 @@ impl RpcDht {
             }
             Err(err) => {
                 self.io
-                    .error(msg, Some(err), None, Some(closer_nodes), peer.clone());
+                    .error(msg, err, None, Some(closer_nodes), peer.clone());
             }
         }
     }
@@ -721,10 +726,7 @@ impl RpcDht {
             IoHandlerEvent::InResponseBadId { peer, .. } => {
                 // a bad or non existing id was supplied in the response from the peer
                 // ephemeral nodes won't send their id, therefor responses will end up here
-                if self.remove_node(&peer).is_some() {
-                    self.queued_events
-                        .push_back(RpcDhtEvent::RemovedBadIdNode(peer));
-                }
+                self.remove_node(&peer);
             }
             IoHandlerEvent::OutRequest { .. } => {
                 // sent a request
@@ -833,7 +835,6 @@ impl Stream for RpcDht {
         }
 
         loop {
-            debug!("Draining events");
             // Drain queued events first.
             if let Some(event) = pin.queued_events.pop_front() {
                 return Poll::Ready(Some(event));
@@ -870,7 +871,6 @@ impl Stream for RpcDht {
             // If no new events have been queued either, signal `Pending` to
             // be polled again later.
             if pin.queued_events.is_empty() {
-                debug!("empty events --> pending");
                 return Poll::Pending;
             }
         }
@@ -915,9 +915,7 @@ impl Borrow<[u8]> for PeerId {
     }
 }
 
-// TODO change : PeerId, Query::Target, Message::Id
-
-/// An 32 byte identifier for a node participating in the DHT.
+/// A 32 byte identifier for a node participating in the DHT.
 #[derive(Debug, Clone, Hash, PartialOrd, PartialEq, Eq)]
 pub struct IdBytes(pub [u8; PUBLIC_KEY_LENGTH]);
 
@@ -946,6 +944,12 @@ impl Borrow<[u8]> for IdBytes {
     }
 }
 
+impl AsRef<[u8]> for IdBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 impl From<&PublicKey> for IdBytes {
     fn from(key: &PublicKey) -> Self {
         Self(key.to_bytes())
@@ -955,6 +959,12 @@ impl From<&PublicKey> for IdBytes {
 impl From<&GenericArray<u8, U32>> for IdBytes {
     fn from(digest: &GenericArray<u8, U32>) -> Self {
         Self(digest.as_slice().try_into().expect("Wrong length"))
+    }
+}
+
+impl From<[u8; 32]> for IdBytes {
+    fn from(digest: [u8; 32]) -> Self {
+        Self(digest)
     }
 }
 
@@ -998,11 +1008,17 @@ impl<T: Into<SocketAddr>> From<T> for Peer {
 /// Response received from `peer` to a request submitted by this DHT.
 #[derive(Debug, Clone)]
 pub struct Response {
+    /// The id of the associated query
     pub query: QueryId,
+    /// Command of the response message
     pub cmd: Command,
+    /// How the request was initiated, as query, update or both.
     pub ty: QueryType,
+    /// `to` field of the message
     pub to: Option<SocketAddr>,
+    /// Peer that issued this reponse
     pub peer: PeerId,
+    /// response payload
     pub value: Option<Vec<u8>>,
 }
 
@@ -1015,7 +1031,6 @@ pub struct RequestId(pub(crate) u64);
 pub enum RpcDhtEvent {
     RequestResult(RequestResult),
     ResponseResult(ResponseResult),
-    RemovedBadIdNode(Peer),
     /// The routing table has been updated.
     RoutingUpdated {
         /// The ID of the peer that was added or updated.
@@ -1024,6 +1039,9 @@ pub enum RpcDhtEvent {
         /// room for the new peer, if any.
         old_peer: Option<PeerId>,
     },
+    /// A completed query.
+    ///
+    /// No more responses are expected for this query
     QueryResult {
         /// The ID of the query that finished.
         id: QueryId,

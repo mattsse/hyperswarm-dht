@@ -11,6 +11,7 @@ use crate::rpc::IdBytes;
 use crate::{
     kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE},
     rpc::{
+        io::VERSION,
         message::{Command, Message, Type},
         query::fixed::FixedPeersIter,
         query::peers::PeersIterState,
@@ -519,7 +520,6 @@ pub struct CommandQuery {
     /// Command def
     pub command: String,
     /// the node who sent the query/update
-    // TODO change to `node`?
     pub node: Peer,
     /// the query/update target (32 byte target)
     pub target: IdBytes,
@@ -527,9 +527,21 @@ pub struct CommandQuery {
     pub value: Option<Vec<u8>>,
 }
 
-impl CommandQuery {
-    pub fn into_err(self, err: impl Into<String>) {
-        unimplemented!()
+impl Into<Message> for CommandQuery {
+    fn into(self) -> Message {
+        Message {
+            version: Some(VERSION),
+            r#type: self.ty.id(),
+            rid: self.rid.0,
+            to: None,
+            id: None,
+            target: Some(self.target.to_vec()),
+            closer_nodes: None,
+            roundtrip_token: None,
+            command: Some(self.command),
+            error: None,
+            value: self.value,
+        }
     }
 }
 

@@ -317,7 +317,7 @@ where
     pub fn error(
         &mut self,
         request: Message,
-        error: Option<String>,
+        error: String,
         value: Option<Vec<u8>>,
         closer_nodes: Option<Vec<u8>>,
         peer: Peer,
@@ -332,7 +332,7 @@ where
             closer_nodes,
             roundtrip_token: None,
             command: None,
-            error,
+            error: Some(error),
             value,
         };
         self.pending_send
@@ -377,7 +377,6 @@ where
         roundtrip_token: Option<Vec<u8>>,
         user_data: TUserData,
     ) {
-        // TODO just push to queue
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Update.id(),
@@ -493,8 +492,6 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        // TODO check providers
-
         // flush pending send
         if let Some(ev) = pin.pending_flush.take() {
             if Sink::poll_ready(Pin::new(&mut pin.socket), cx).is_ready() {
@@ -540,18 +537,14 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
         // read from socket
         match Stream::poll_next(Pin::new(&mut pin.socket), cx) {
             Poll::Ready(Some(Ok((msg, rinfo)))) => {
-                debug!("read message {:?}", msg);
                 if let Some(event) = pin.on_message(msg, rinfo) {
-                    debug!("return handler event {:?}", event);
                     return Poll::Ready(Some(event));
                 }
             }
             Poll::Ready(Some(Err(err))) => {
-                debug!("read error {:?}", err);
                 return Poll::Ready(Some(IoHandlerEvent::InSocketErr { err }));
             }
-            Poll::Ready(None) => debug!("Stream read none"),
-            Poll::Pending => debug!("Stream read pending"),
+            _ => {}
         }
 
         if pin.last_rotation + pin.rotation > Instant::now() {
