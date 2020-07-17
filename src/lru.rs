@@ -91,6 +91,22 @@ impl AddressCache {
         }
     }
 
+    fn remove(&mut self, key: &Address) -> Option<Address> {
+        match key {
+            Address::Remote(addr) => {
+                if let AddressCache::Remote(cache) = self {
+                    return cache.remove(&addr).map(Address::from);
+                }
+            }
+            Address::Local(addr) => {
+                if let AddressCache::Local(cache) = self {
+                    return cache.remove(&addr).map(Address::from);
+                }
+            }
+        }
+        None
+    }
+
     fn insert(&mut self, addr: Address, expiration: Instant) -> bool {
         match addr {
             Address::Remote(addr) => {
@@ -241,6 +257,17 @@ impl<T: Hash + Eq> CacheEntry<T> {
         }
     }
 
+    fn remove(&mut self, key: &T) -> Option<T> {
+        self.inner.remove_entry(key).map(|(value, _)| {
+            let _ = self
+                .list
+                .iter()
+                .position(|l| l.borrow() == key)
+                .map(|p| self.list.remove(p));
+            value
+        })
+    }
+
     fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -374,6 +401,31 @@ impl PeerCache {
             addrs.set_expiration(expiration);
             addrs
         })
+    }
+
+    pub fn remove_addr(&mut self, key: &CacheKey, addr: impl Into<Address>) -> Option<Address> {
+        if let Some(addrs) = self.map.get_mut(key) {
+            let addr = addr.into();
+            if let Some(value) = addrs.remove(&addr) {
+                self.cnt -= 1;
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    pub fn remove(&mut self, key: &CacheKey) -> Option<AddressCache> {
+        if let Some(addrs) = self.map.remove(key) {
+            let _ = self
+                .list
+                .iter()
+                .position(|l| l.borrow() == key)
+                .map(|p| self.list.remove(p));
+            self.cnt -= addrs.len();
+            Some(addrs)
+        } else {
+            None
+        }
     }
 }
 
