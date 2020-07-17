@@ -24,10 +24,13 @@ use wasm_timer::Instant;
 use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::kbucket::KBucketsTable;
 use crate::lru::{AddressCache, CacheKey, PeerCache};
-use crate::peers::{PeersCodec, PeersEncoding};
+use crate::peers::{decode_local_peers, decode_peers, PeersCodec, PeersEncoding};
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
-use crate::rpc::{DhtConfig, IdBytes, PeerId, Response, RpcDht};
+use crate::rpc::{
+    DhtConfig, IdBytes, PeerId, RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent,
+};
+use crate::store::Store;
 
 mod dht_proto {
     use prost::Message;
@@ -59,9 +62,9 @@ const DEFAULT_BOOTSTRAP: [&str; 3] = [
     "bootstrap3.hyperdht.org:49737",
 ];
 
-const MUTABLE_STORE_CMD: &str = "mutable-store";
-const IMMUTABLE_STORE_CMD: &str = "immutable-store";
-const PEERS_CMD: &str = "peers";
+pub const MUTABLE_STORE_CMD: &str = "mutable-store";
+pub const IMMUTABLE_STORE_CMD: &str = "immutable-store";
+pub const PEERS_CMD: &str = "peers";
 
 pub struct HyperDht {
     /// The underlying Rpc DHT including IO
@@ -71,6 +74,10 @@ pub struct HyperDht {
     adaptive: bool,
     /// Cache for known peers
     peers: PeerCache,
+    /// Storage for the mutable/immutable values
+    store: Store,
+    /// Queued events to return when being polled.
+    queued_events: VecDeque<HyperDhtEvent>,
 }
 
 impl HyperDht {
@@ -85,17 +92,18 @@ impl HyperDht {
             queries: Default::default(),
             inner: RpcDht::with_config(config).await?,
             // peer cache with 25 min timeout
-            peers: PeerCache::new(1000, Duration::from_secs(60 * 25)),
+            peers: PeerCache::new(65536, Duration::from_secs(60 * 25)),
+            store: Store::new(5000),
+            queued_events: Default::default(),
         })
     }
 
-    /// Handle an incoming requests for the registered commands
+    /// Handle an incoming requests for the registered commands and reply.
     fn on_command(&mut self, q: CommandQuery) {
-        // TODO decode q.value and reply
         match q.command.as_str() {
             MUTABLE_STORE_CMD => {}
             IMMUTABLE_STORE_CMD => {}
-            PEERS_CMD => {}
+            PEERS_CMD => self.on_peers(q),
             s => {
                 // additional registered command -> return
             }
@@ -119,7 +127,7 @@ impl HyperDht {
 
                     let remote_cache = CacheKey::Remote(query.target.clone());
 
-                    let local = peer.local_address.as_ref().and_then(|l| {
+                    let local_cache = peer.local_address.as_ref().and_then(|l| {
                         if l.len() == 6 {
                             let prefix: [u8; 2] = l[0..2].try_into().unwrap();
                             let suffix: [u8; 4] = l[2..].try_into().unwrap();
@@ -136,7 +144,7 @@ impl HyperDht {
                     });
 
                     if query.ty == Type::Query {
-                        let local_peers = if let Some((local_cache, suffix)) = local {
+                        let local_peers = if let Some((local_cache, suffix)) = local_cache {
                             self.peers.get(&local_cache).and_then(|addrs| {
                                 addrs.iter_locals().map(|locals| {
                                     locals
@@ -185,19 +193,23 @@ impl HyperDht {
                     }
 
                     if peer.unannounce.unwrap_or_default() {
-                        // remove the record
+                        // remove from cache
+                        self.peers.remove_addr(&remote_cache, from);
+                        if let Some(local) = local_cache {
+                            self.peers.remove_addr(&local.0, local.1);
+                        }
                     } else {
                         // add the new record
+                        self.peers.insert(remote_cache, from);
+                        if let Some(local) = local_cache {
+                            self.peers.insert(local.0, local.1);
+                        }
                     }
                 }
-
-                // self.inner.repl
-                // 1. call js onpeers here
-                // 2. reply with closest nodes
+                let _ = query.value.take();
+                self.inner.reply_ok(query);
             }
         }
-
-        unimplemented!()
     }
 
     /// Look for peers in the DHT on the given topic.
@@ -213,8 +225,11 @@ impl HyperDht {
 
         let id = self
             .inner
-            .query(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
-        self.queries.insert(id, QueryStreamType::LookUp(vec![]));
+            .query(PEERS_CMD, kbucket::Key::new(opts.topic.clone()), Some(buf));
+        self.queries.insert(
+            id,
+            QueryStreamType::LookUp(QueryStreamInner::new(opts.topic, opts.local_addr)),
+        );
         id
     }
 
@@ -229,10 +244,15 @@ impl HyperDht {
         };
         let buf = encode_input(&peers);
 
-        let id = self
-            .inner
-            .query_and_update(PEERS_CMD, kbucket::Key::new(opts.topic), Some(buf));
-        self.queries.insert(id, QueryStreamType::Announce(vec![]));
+        let id = self.inner.query_and_update(
+            PEERS_CMD,
+            kbucket::Key::new(opts.topic.clone()),
+            Some(buf),
+        );
+        self.queries.insert(
+            id,
+            QueryStreamType::Announce(QueryStreamInner::new(opts.topic, opts.local_addr)),
+        );
         id
     }
 
@@ -321,13 +341,8 @@ impl TryFrom<&[u8]> for QueryOpts {
     }
 }
 
-#[derive(Debug)]
-enum Addresses {
-    Remote(FnvHashSet<SocketAddr>),
-    Local(FnvHashSet<[u8; 4]>),
-}
-
 // TODO add actual types
+#[derive(Debug)]
 pub enum HyperDhtEvent {
     /// The result of [`HyperDht::announce`].
     AnnounceResult,
@@ -347,27 +362,81 @@ pub struct LookupOk {
     local_peers: Vec<SocketAddr>,
 }
 
+/// A Response to a query request from a peer
+#[derive(Debug, Clone)]
+pub struct Peers {
+    pub node: PeerId,
+    pub to: Option<SocketAddr>,
+    pub peers: Vec<SocketAddr>,
+    pub local_peers: Vec<SocketAddr>,
+}
+
 /// Type to keep track of the responses for queries in progress.
 enum QueryStreamType {
-    LookUp(Vec<Response>),
-    Announce(Vec<Response>),
-    UnAnnounce(Vec<Response>),
+    LookUp(QueryStreamInner),
+    Announce(QueryStreamInner),
+    UnAnnounce(QueryStreamInner),
 }
 
 impl QueryStreamType {
-    fn inner_mut(&mut self, resp: Response) -> &mut Vec<Response> {
+    fn inject_response(&mut self, resp: Response) {
         match self {
-            QueryStreamType::LookUp(r)
-            | QueryStreamType::Announce(r)
-            | QueryStreamType::UnAnnounce(r) => r,
+            QueryStreamType::LookUp(inner)
+            | QueryStreamType::Announce(inner)
+            | QueryStreamType::UnAnnounce(inner) => inner.inject_response(resp),
         }
     }
 
-    fn inner(&self, resp: Response) -> &Vec<Response> {
-        match self {
-            QueryStreamType::LookUp(r)
-            | QueryStreamType::Announce(r)
-            | QueryStreamType::UnAnnounce(r) => r,
+    fn finalize(self) -> HyperDhtEvent {
+        unimplemented!()
+    }
+}
+
+struct QueryStreamInner {
+    topic: IdBytes,
+    responses: Vec<Peers>,
+    local_address: Option<SocketAddr>,
+}
+
+impl QueryStreamInner {
+    fn new(topic: IdBytes, local_address: Option<SocketAddr>) -> Self {
+        Self {
+            topic,
+            responses: vec![],
+            local_address,
+        }
+    }
+
+    fn inject_response(&mut self, resp: Response) {
+        if let Some(val) = resp
+            .value
+            .as_ref()
+            .and_then(|val| PeersOutput::decode(val.as_slice()).ok())
+        {
+            let peers = val
+                .peers
+                .as_ref()
+                .map(|buf| decode_peers(buf))
+                .unwrap_or_default();
+
+            let local_peers = val
+                .local_peers
+                .as_ref()
+                .and_then(|buf| {
+                    if let Some(SocketAddr::V4(addr)) = self.local_address {
+                        Some(decode_local_peers(&addr, buf))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+
+            self.responses.push(Peers {
+                node: resp.peer,
+                to: resp.to,
+                peers,
+                local_peers,
+            })
         }
     }
 }
