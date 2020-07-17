@@ -1,30 +1,23 @@
 #![allow(unused)]
 
 use core::cmp;
-use std::cmp::Ordering;
 use std::convert::{TryFrom, TryInto};
-use std::hash::Hash;
 use std::io;
-use std::mem::take;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::pin::Pin;
 use std::time::Duration;
 
 use ed25519_dalek::PublicKey;
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
 use futures::task::{Context, Poll};
 use futures::Stream;
 use prost::Message;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use smallvec::alloc::borrow::Borrow;
 use smallvec::alloc::collections::VecDeque;
-use smallvec::SmallVec;
-use wasm_timer::Instant;
 
 use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
-use crate::kbucket::KBucketsTable;
-use crate::lru::{AddressCache, CacheKey, PeerCache};
-use crate::peers::{decode_local_peers, decode_peers, PeersCodec, PeersEncoding};
+use crate::lru::{CacheKey, PeerCache};
+use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
 use crate::rpc::{
@@ -104,7 +97,7 @@ impl HyperDht {
             MUTABLE_STORE_CMD => {}
             IMMUTABLE_STORE_CMD => {}
             PEERS_CMD => self.on_peers(q),
-            s => {
+            _s => {
                 // additional registered command -> return
             }
         }
@@ -123,7 +116,7 @@ impl HyperDht {
                 if let IpAddr::V4(host) = query.node.addr.ip() {
                     let from = SocketAddr::V4(SocketAddrV4::new(host, port));
 
-                    let remote_record = from.encode();
+                    let _remote_record = from.encode();
 
                     let remote_cache = CacheKey::Remote(query.target.clone());
 
@@ -311,7 +304,11 @@ impl Stream for HyperDht {
                         RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))) => {
                             pin.inject_response(resp)
                         }
-                        RpcDhtEvent::QueryResult { id, cmd, stats } => pin.query_finished(id),
+                        RpcDhtEvent::QueryResult {
+                            id,
+                            cmd: _,
+                            stats: _,
+                        } => pin.query_finished(id),
                         _ => {}
                     },
                     _ => break,

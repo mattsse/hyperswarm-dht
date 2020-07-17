@@ -1,6 +1,6 @@
 use std::io;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use prost::Message as ProstMessage;
 use tokio_util::codec::{Decoder, Encoder};
 

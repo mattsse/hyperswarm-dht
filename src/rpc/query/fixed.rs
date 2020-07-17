@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::{borrow::Cow, collections::hash_map::Entry, num::NonZeroUsize, vec};
+use std::{collections::hash_map::Entry, num::NonZeroUsize, vec};
 
 use fnv::FnvHashMap;
 

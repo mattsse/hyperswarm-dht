@@ -3,16 +3,12 @@ use std::fmt;
 use std::fmt::Formatter;
 use std::io;
 use std::net::SocketAddr;
-use std::str::FromStr;
 
 use futures::StreamExt;
 use futures_codec::{Decoder, Encoder};
 use prost::Message as ProstMessage;
-use sha2::digest::generic_array::GenericArray;
-use wasm_timer::Instant;
 
 use crate::kbucket;
-use crate::kbucket::KeyBytes;
 use crate::peers::{decode_peer_ids, decode_peers};
 use crate::rpc::query::CommandQuery;
 use crate::rpc::{IdBytes, Peer, PeerId, RequestId};

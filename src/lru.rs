@@ -354,7 +354,7 @@ impl PeerCache {
     }
 
     /// Removes least recently used items to make space for new ones.
-    fn remove_lru(&mut self, now: Instant) {
+    fn remove_lru(&mut self, _now: Instant) {
         while self.cnt >= self.capacity {
             let mut empty_addrs = false;
             if let Some(key) = self.list.iter().next() {
@@ -431,8 +431,6 @@ impl PeerCache {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddrV4;
-
     use super::*;
 
     fn sleep(time: u64) {

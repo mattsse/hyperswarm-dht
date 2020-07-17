@@ -1,5 +1,5 @@
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
-use blake2::{Blake2b, Blake2s, VarBlake2b};
+use blake2::{Blake2b, VarBlake2b};
 use ed25519_dalek::SignatureError;
 pub use ed25519_dalek::{ExpandedSecretKey, Keypair, PublicKey, SecretKey, Signature};
 

@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -423,7 +422,7 @@ impl QueryStream {
         }
     }
 
-    fn poll(&mut self, now: Instant) -> Poll<Option<QueryEvent>> {
+    fn poll(&mut self, _now: Instant) -> Poll<Option<QueryEvent>> {
         self.poll_iter()
     }
 

@@ -1,12 +1,9 @@
-use std::collections::btree_map::{BTreeMap, Entry};
 use std::net::SocketAddr;
-use std::{iter::FromIterator, num::NonZeroUsize, time::Duration};
+use std::{iter::FromIterator, num::NonZeroUsize};
 
 use fnv::FnvHashMap;
-use wasm_timer::Instant;
 
 use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
-use crate::rpc::message::Message;
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::{self, IdBytes, PeerId};
 

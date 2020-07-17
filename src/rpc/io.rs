@@ -8,10 +8,8 @@ use std::time::Duration;
 
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
 use blake2::{Blake2b, Digest};
-use bytes::Bytes;
 use fnv::FnvHashMap;
 use futures::{
-    pin_mut,
     task::{Context, Poll},
     Sink,
 };
@@ -25,7 +23,6 @@ use wasm_timer::Instant;
 use crate::rpc::IdBytes;
 use crate::{
     kbucket::Key,
-    kbucket::KeyBytes,
     peers::PeersEncoding,
     rpc::{
         fill_random_bytes,
@@ -233,7 +230,7 @@ where
             let (msg, peer) = event.inner();
             let mut buf = Vec::with_capacity(msg.encoded_len());
             msg.encode(&mut buf)?;
-            let socket = &mut self.socket;
+            let _socket = &mut self.socket;
             Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr.clone()))?;
 
             self.pending_flush = Some(event);
@@ -471,7 +468,11 @@ where
     }
 
     /// Remove the matching request from the sending queue or stop waiting for a response if already sent.
-    fn cancel(&mut self, rid: RequestId, error: Option<String>) -> Option<MessageEvent<TUserData>> {
+    fn cancel(
+        &mut self,
+        rid: RequestId,
+        _error: Option<String>,
+    ) -> Option<MessageEvent<TUserData>> {
         if let Some(s) = self
             .pending_send
             .iter()

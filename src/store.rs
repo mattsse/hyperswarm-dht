@@ -1,5 +1,8 @@
+use std::hash::{Hash, Hasher};
+
 use fnv::FnvHashMap;
 use lru::LruCache;
+use prost::Message;
 
 use crate::crypto;
 use crate::dht_proto::Mutable;
@@ -7,8 +10,6 @@ use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
 use crate::rpc::IdBytes;
 use crate::{IMMUTABLE_STORE_CMD, MUTABLE_STORE_CMD};
-use prost::Message;
-use std::hash::{Hash, Hasher};
 
 enum StorageEntry {
     Mutable(Mutable),
@@ -87,8 +88,8 @@ impl Store {
 
     fn query_mut(
         &mut self,
-        query: &CommandQuery,
-        mutable: Mutable,
+        _query: &CommandQuery,
+        _mutable: Mutable,
     ) -> Result<Option<Vec<u8>>, String> {
         Ok(None)
     }
@@ -104,7 +105,7 @@ impl Store {
 
         let public_key = query.target.clone();
 
-        let key = if let Some(salt) = mutable.salt {
+        let _key = if let Some(salt) = mutable.salt {
             StorageKey::Mutable(
                 public_key
                     .as_ref()

@@ -28,10 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     RpcDhtEvent::RequestResult(res) => println!("b request result {:?}", res),
                     RpcDhtEvent::ResponseResult(res) => println!("b response result {:?}", res),
                     RpcDhtEvent::RemovedBadIdNode(_) => println!("b removed bad id node"),
-                    RpcDhtEvent::RoutingUpdated { peer, old_peer } => {
+                    RpcDhtEvent::RoutingUpdated { peer, old_peer: _ } => {
                         println!("b routing updated {:?}", peer)
                     }
-                    RpcDhtEvent::QueryResult { id, cmd, stats } => {
+                    RpcDhtEvent::QueryResult { id: _, cmd, stats } => {
                         println!("b query result {} {:?}", cmd, stats)
                     }
                 }

@@ -1,12 +1,10 @@
 use std::convert::{TryFrom, TryInto};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use bytes::{Buf, BufMut, BytesMut};
-use futures::io::Error;
 use futures_codec::Encoder;
 use smallvec::alloc::borrow::Borrow;
 
-use crate::kbucket::{self, EntryView, KeyBytes};
+use crate::kbucket::{self, EntryView};
 use crate::rpc::{IdBytes, Node, Peer, PeerId};
 
 #[derive(Debug, Clone, Default)]

@@ -1,28 +1,24 @@
 //! Make RPC calls over a Kademlia based DHT.
 
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::hash::Hash;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::num::NonZeroUsize;
-use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
 use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
-use fnv::FnvHashSet;
 use futures::{
     stream::Stream,
     task::{Context, Poll},
-    Future, TryStreamExt,
+    Future,
 };
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::net::UdpSocket;
-use tokio_util::udp::UdpFramed;
-use wasm_timer::{Delay, Instant};
+use wasm_timer::Instant;
 
 use crate::{
     kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
@@ -431,7 +427,7 @@ impl RpcDht {
                     kbucket::InsertResult::Full => {
                         debug!("Bucket full. Peer not added to routing table: {:?}", peer)
                     }
-                    kbucket::InsertResult::Pending { disconnected } => {
+                    kbucket::InsertResult::Pending { disconnected: _ } => {
 
                         // TODO dial remote
                     }
@@ -702,7 +698,7 @@ impl RpcDht {
     }
 
     /// Get the `num` closest nodes in the bucket.
-    fn closer_nodes(&mut self, key: &IdBytes, num: usize) -> Vec<u8> {
+    fn closer_nodes(&mut self, key: &IdBytes, _num: usize) -> Vec<u8> {
         let nodes = self
             .kbuckets
             .closest(&KeyBytes::new(key.clone()))
@@ -711,7 +707,7 @@ impl RpcDht {
         PeersEncoding::encode(&nodes)
     }
 
-    fn inject_response(&mut self, req: Message, response: Message, peer: Peer) {}
+    fn inject_response(&mut self, _req: Message, _response: Message, _peer: Peer) {}
 
     /// Handle the event generated from the underlying IO
     fn inject_event(&mut self, event: IoHandlerEvent<QueryId>) {
@@ -740,9 +736,9 @@ impl RpcDht {
                 self.on_response(req, resp, peer, user_data);
             }
             IoHandlerEvent::RequestTimeout {
-                msg,
+                msg: _,
                 peer,
-                sent,
+                sent: _,
                 user_data,
             } => {
                 if let Some(query) = self.queries.get_mut(&user_data) {
@@ -849,7 +845,7 @@ impl Stream for RpcDht {
                             return Poll::Ready(Some(event));
                         }
                     }
-                    QueryPoolState::Finished(q) => if let Some(event) = pin.query_finished(q) {},
+                    QueryPoolState::Finished(q) => if let Some(_event) = pin.query_finished(q) {},
                     QueryPoolState::Timeout(q) => {
                         if let Some(event) = pin.query_timeout(q) {
                             return Poll::Ready(Some(event));
@@ -1107,9 +1103,9 @@ pub enum ResponseError {
 pub struct ResponseBuilder {}
 
 impl ResponseBuilder {
-    pub fn into_error(self, err: impl Into<String>) {}
+    pub fn into_error(self, _err: impl Into<String>) {}
 
-    pub fn into_resp(self, value: Vec<u8>) {}
+    pub fn into_resp(self, _value: Vec<u8>) {}
 }
 
 #[inline]
