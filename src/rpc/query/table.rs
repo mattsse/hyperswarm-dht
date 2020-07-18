@@ -77,7 +77,7 @@ impl QueryTable {
             .map(|(p, _)| p)
             .collect::<Vec<_>>();
 
-        peers.sort_by(|a, b| self.target.distance(a).cmp(&self.target.distance(b)));
+        peers.sort_by_key(|&a| self.target.distance(a));
 
         FixedPeersIter::new(
             peers

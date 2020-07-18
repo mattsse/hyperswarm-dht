@@ -212,7 +212,7 @@ where
             let (msg, peer) = event.inner();
             let mut buf = Vec::with_capacity(msg.encoded_len());
             msg.encode(&mut buf)?;
-            Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr.clone()))?;
+            Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr))?;
 
             self.pending_flush = Some(event);
         }
@@ -376,7 +376,7 @@ where
                     return IoHandlerEvent::InResponse {
                         peer,
                         resp: recv,
-                        req: req.message,
+                        req: Box::new(req.message),
                         user_data: req.user_data,
                     };
                 }
@@ -504,10 +504,8 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
             } else {
                 pin.pending_flush = Some(ev);
             }
-        } else {
-            if let Err(err) = pin.send_next_pending() {
-                return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
-            }
+        } else if let Err(err) = pin.send_next_pending() {
+            return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
         }
 
         // read from socket
@@ -540,7 +538,7 @@ pub enum IoHandlerEvent<TUserData> {
     OutRequest { id: RequestId },
     /// The Response to a sent Request
     InResponse {
-        req: Message,
+        req: Box<Message>,
         resp: Message,
         peer: Peer,
         user_data: TUserData,

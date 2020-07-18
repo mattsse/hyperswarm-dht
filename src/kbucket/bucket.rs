@@ -266,7 +266,7 @@ where
             }
         }
 
-        return None;
+        None
     }
 
     /// Updates the status of the pending node, if any.
@@ -366,11 +366,11 @@ where
             // Adjust `first_connected_pos` accordingly.
             match status {
                 NodeStatus::Connected => {
-                    if self.first_connected_pos.map_or(false, |p| p == pos.0) {
-                        if pos.0 == self.nodes.len() {
-                            // It was the last connected node.
-                            self.first_connected_pos = None
-                        }
+                    if self.first_connected_pos.map_or(false, |p| p == pos.0)
+                        && pos.0 == self.nodes.len()
+                    {
+                        // It was the last connected node.
+                        self.first_connected_pos = None
                     }
                 }
                 NodeStatus::Disconnected => {

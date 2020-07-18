@@ -173,7 +173,7 @@ impl Message {
     pub(crate) fn decode_closer_nodes(&self) -> Vec<PeerId> {
         self.closer_nodes
             .as_ref()
-            .map(|nodes| decode_peer_ids(nodes))
+            .map(decode_peer_ids)
             .unwrap_or_default()
     }
 

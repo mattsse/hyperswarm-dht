@@ -181,9 +181,9 @@ impl QueryPool {
         }
 
         if self.queries.is_empty() {
-            return QueryPoolState::Idle;
+            QueryPoolState::Idle
         } else {
-            return QueryPoolState::Waiting(None);
+            QueryPoolState::Waiting(None)
         }
     }
 }
@@ -222,6 +222,7 @@ pub struct QueryStream {
 }
 
 impl QueryStream {
+    #[allow(clippy::too_many_arguments)]
     pub fn bootstrap<T, I, S>(
         id: QueryId,
         cmd: T,
@@ -269,9 +270,9 @@ impl QueryStream {
         self.stats.failure += 1;
         for (p, state) in self.inner.peers_mut() {
             if p.preimage().addr == peer.addr {
-                *state = PeerState::Failed
+                *state = PeerState::Failed;
+                break;
             }
-            break;
         }
         self.peer_iter.on_failure(&peer);
     }
@@ -308,7 +309,7 @@ impl QueryStream {
 
         if let Some(token) = resp.roundtrip_token.take() {
             self.inner
-                .add_verified(remote.clone(), token, resp.decode_to_peer());
+                .add_verified(remote, token, resp.decode_to_peer());
         }
 
         Some(Response {

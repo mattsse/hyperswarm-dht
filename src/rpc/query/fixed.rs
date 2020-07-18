@@ -129,7 +129,7 @@ impl FixedPeersIter {
 
     pub fn next(&mut self) -> PeersIterState {
         match &mut self.state {
-            State::Finished => return PeersIterState::Finished,
+            State::Finished => PeersIterState::Finished,
             State::Waiting { num_waiting } => {
                 if *num_waiting >= self.parallelism.get() {
                     return PeersIterState::WaitingAtCapacity;

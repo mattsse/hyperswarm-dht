@@ -66,6 +66,7 @@
 //
 // [0]: https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
 #![allow(unused)]
+
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
@@ -201,7 +202,7 @@ where
     }
 
     /// Returns an iterator over all the entries in the routing table.
-    pub fn iter<'a>(&'a mut self) -> impl Iterator<Item = EntryRefView<'a, TKey, TVal>> {
+    pub fn iter(&mut self) -> impl Iterator<Item = EntryRefView<TKey, TVal>> {
         let applied_pending = &mut self.applied_pending;
         self.buckets.iter_mut().flat_map(move |table| {
             if let Some(applied) = table.apply_pending() {

@@ -63,8 +63,7 @@ pub fn decode_peer_ids(buf: impl AsRef<[u8]>) -> Vec<PeerId> {
 impl TryFrom<&[u8]> for PeerId {
     type Error = ();
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let buf = value.as_ref();
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
         if buf.len() != 38 {
             return Err(());
         }
@@ -126,7 +125,7 @@ impl PeersEncoding for SocketAddr {
 /// Decode local peers from a buffer.
 pub fn decode_local_peers(local: &SocketAddrV4, buf: impl AsRef<[u8]>) -> Vec<SocketAddr> {
     let buf = buf.as_ref();
-    if buf.len() & 3 == 0 {
+    if buf.len().trailing_zeros() >= 2 {
         return vec![];
     }
 

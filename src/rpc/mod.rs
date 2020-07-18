@@ -230,7 +230,7 @@ impl RpcDht {
     ///
     /// If no socket was created within then `DhtConfig`, a new socket at a random port will be created.
     pub async fn with_config(config: DhtConfig) -> std::io::Result<Self> {
-        let local_id = Key::new(config.local_id.unwrap_or_else(|| IdBytes::random()));
+        let local_id = Key::new(config.local_id.unwrap_or_else(IdBytes::random));
 
         let query_id = if config.ephemeral {
             None
@@ -419,7 +419,7 @@ impl RpcDht {
                 match entry.insert(node, NodeStatus::Connected) {
                     kbucket::InsertResult::Inserted => {
                         self.queued_events.push_back(RpcDhtEvent::RoutingUpdated {
-                            peer: peer.clone(),
+                            peer,
                             old_peer: None,
                         });
                     }
@@ -503,14 +503,14 @@ impl RpcDht {
     }
 
     /// Process a response
-    fn on_response(&mut self, req: Message, resp: Message, peer: Peer, id: QueryId) {
+    fn on_response(&mut self, req: Box<Message>, resp: Message, peer: Peer, id: QueryId) {
         if req.is_ping() {
             self.on_pong(resp, peer);
             return;
         }
 
         if let Some(query) = self.queries.get_mut(&id) {
-            if let Some(resp) = query.inject_response(resp, peer.clone()) {
+            if let Some(resp) = query.inject_response(resp, peer) {
                 self.queued_events
                     .push_back(RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))))
             }
@@ -531,12 +531,12 @@ impl RpcDht {
             return;
         }
         if self.commands.contains(&command) {
-            if let Some(_) = msg.valid_target_id_bytes() {
+            if msg.valid_target_id_bytes().is_some() {
                 let query = CommandQuery {
                     rid: msg.get_request_id(),
                     ty,
                     command,
-                    node: peer.clone(),
+                    node: peer,
                     target: msg.valid_id_bytes().expect("s.a"),
                     value: msg.value,
                 };
@@ -600,15 +600,13 @@ impl RpcDht {
                 return;
             }
         }
-        self.io
-            .response(msg, Some(peer.encode()), None, peer.clone());
+        self.io.response(msg, Some(peer.encode()), None, peer);
     }
 
     fn on_findnode(&mut self, msg: Message, peer: Peer) {
         if let Some(key) = msg.valid_id_bytes() {
             let closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
-            self.io
-                .response(msg, None, Some(closer_nodes), peer.clone());
+            self.io.response(msg, None, Some(closer_nodes), peer);
         }
     }
 
@@ -808,11 +806,8 @@ impl Stream for RpcDht {
             }
 
             // Look for a sent/received message
-            loop {
-                match Stream::poll_next(Pin::new(&mut pin.io), cx) {
-                    Poll::Ready(Some(event)) => pin.inject_event(event),
-                    _ => break,
-                }
+            while let Poll::Ready(Some(event)) = Stream::poll_next(Pin::new(&mut pin.io), cx) {
+                pin.inject_event(event);
             }
 
             // No immediate event was produced as a result of a finished query or socket.

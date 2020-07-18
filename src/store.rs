@@ -34,28 +34,11 @@ impl StorageEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum StorageKey {
     Mutable(Vec<u8>),
     Immutable(IdBytes),
 }
-
-impl Hash for StorageKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            StorageKey::Mutable(id) => {
-                b"m".hash(state);
-                id.hash(state);
-            }
-            StorageKey::Immutable(id) => {
-                b"i".hash(state);
-                id.hash(state);
-            }
-        }
-    }
-}
-
-impl Eq for StorageKey {}
 
 pub struct Store {
     /// Value cache
@@ -108,13 +91,7 @@ impl Store {
 
     fn get_mut_key(mutable: &Mutable, id: &IdBytes) -> StorageKey {
         if let Some(ref salt) = mutable.salt {
-            StorageKey::Mutable(
-                id.as_ref()
-                    .into_iter()
-                    .chain(salt.into_iter())
-                    .cloned()
-                    .collect(),
-            )
+            StorageKey::Mutable(id.as_ref().iter().chain(salt.iter()).cloned().collect())
         } else {
             StorageKey::Mutable(id.to_vec())
         }
@@ -175,10 +152,8 @@ impl Store {
             if key != query.target {
                 return query.into_response_with_error(ERR_INVALID_INPUT);
             }
-            self.inner.put(
-                StorageKey::Immutable(key),
-                StorageEntry::Immutable(value.clone()),
-            );
+            self.inner
+                .put(StorageKey::Immutable(key), StorageEntry::Immutable(value));
         }
         query.into()
     }
@@ -198,10 +173,8 @@ fn verify(pk: &IdBytes, mutable: &Mutable) -> Result<(), String> {
 fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
     let seq_a = a.seq.unwrap_or_default();
     let seq_b = b.seq.unwrap_or_default();
-    if a.value.is_some() {
-        if seq_a == seq_b && a.value != b.value {
-            return Err("ERR_INVALID_SEQ".to_string());
-        }
+    if a.value.is_some() && seq_a == seq_b && a.value != b.value {
+        return Err("ERR_INVALID_SEQ".to_string());
     }
     if seq_a <= seq_b {
         Err("ERR_SEQ_MUST_EXCEED_CURRENT".to_string())

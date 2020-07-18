@@ -114,7 +114,7 @@ impl HyperDht {
                 self.queued_events
                     .push_back(HyperDhtEvent::CustomCommandQuery {
                         command,
-                        msg: resp.msg,
+                        msg: Box::new(resp.msg),
                         peer: resp.peer,
                     })
             }
@@ -160,7 +160,7 @@ impl HyperDht {
                                 addrs.iter_locals().map(|locals| {
                                     locals
                                         .filter(|s| **s != suffix)
-                                        .flat_map(|s| s.into_iter())
+                                        .flat_map(|s| s.iter())
                                         .cloned()
                                         .take(32)
                                         .collect::<Vec<_>>()
@@ -313,23 +313,20 @@ impl Stream for HyperDht {
                 return Poll::Ready(Some(event));
             }
 
-            loop {
-                match Stream::poll_next(Pin::new(&mut pin.inner), cx) {
-                    Poll::Ready(Some(ev)) => match ev {
-                        RpcDhtEvent::RequestResult(Ok(RequestOk::CustomCommandRequest {
-                            query,
-                        })) => pin.on_command(query),
-                        RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))) => {
-                            pin.inject_response(resp)
-                        }
-                        RpcDhtEvent::QueryResult {
-                            id,
-                            cmd: _,
-                            stats: _,
-                        } => pin.query_finished(id),
-                        _ => {}
-                    },
-                    _ => break,
+            while let Poll::Ready(Some(ev)) = Stream::poll_next(Pin::new(&mut pin.inner), cx) {
+                match ev {
+                    RpcDhtEvent::RequestResult(Ok(RequestOk::CustomCommandRequest { query })) => {
+                        pin.on_command(query)
+                    }
+                    RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))) => {
+                        pin.inject_response(resp)
+                    }
+                    RpcDhtEvent::QueryResult {
+                        id,
+                        cmd: _,
+                        stats: _,
+                    } => pin.query_finished(id),
+                    _ => {}
                 }
             }
 
@@ -427,7 +424,7 @@ pub enum HyperDhtEvent {
         /// The unknown command
         command: String,
         /// The message we received from the peer.
-        msg: Message,
+        msg: Box<Message>,
         /// The peer the message originated from.
         peer: Peer,
     },
@@ -510,11 +507,7 @@ impl QueryStreamInner {
             .as_ref()
             .and_then(|val| PeersOutput::decode(val.as_slice()).ok())
         {
-            let peers = val
-                .peers
-                .as_ref()
-                .map(|buf| decode_peers(buf))
-                .unwrap_or_default();
+            let peers = val.peers.as_ref().map(decode_peers).unwrap_or_default();
 
             let local_peers = val
                 .local_peers
