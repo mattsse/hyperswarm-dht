@@ -4,16 +4,35 @@ use fnv::FnvHashMap;
 use lru::LruCache;
 use prost::Message;
 
-use crate::crypto;
 use crate::dht_proto::Mutable;
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, QueryId};
 use crate::rpc::IdBytes;
+use crate::{crypto, ERR_INVALID_INPUT};
 use crate::{IMMUTABLE_STORE_CMD, MUTABLE_STORE_CMD};
+use ed25519_dalek::PublicKey;
 
 enum StorageEntry {
     Mutable(Mutable),
     Immutable(Vec<u8>),
+}
+
+impl StorageEntry {
+    fn as_mutable(&self) -> Option<&Mutable> {
+        if let StorageEntry::Mutable(m) = self {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    fn as_immutable(&self) -> Option<&Vec<u8>> {
+        if let StorageEntry::Immutable(i) = self {
+            Some(i)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +60,7 @@ impl Eq for StorageKey {}
 
 pub struct Store {
     /// Value cache
-    inner: LruCache<StorageKey, Vec<u8>>,
+    inner: LruCache<StorageKey, StorageEntry>,
     /// Keep track of all matching values from the DHT.
     streams: FnvHashMap<QueryId, ()>,
 }
@@ -103,23 +122,35 @@ impl Store {
             return Ok(None);
         }
 
-        let public_key = query.target.clone();
-
-        let _key = if let Some(salt) = mutable.salt {
+        let key = if let Some(ref salt) = mutable.salt {
             StorageKey::Mutable(
-                public_key
+                query
+                    .target
                     .as_ref()
                     .into_iter()
-                    .cloned()
                     .chain(salt.into_iter())
+                    .cloned()
                     .collect(),
             )
         } else {
-            StorageKey::Mutable(public_key.to_vec())
+            StorageKey::Mutable(query.target.to_vec())
         };
+        let public_key = PublicKey::from_bytes(query.target.as_ref())
+            .map_err(|_| ERR_INVALID_INPUT.to_string())?;
+        let sig = crypto::signature(&mutable).ok_or_else(|| ERR_INVALID_INPUT.to_string())?;
+        let msg = crypto::signable(&mutable).map_err(|_| ERR_INVALID_INPUT.to_string())?;
 
-        // let msg = crypto::signable()
+        if crypto::verify(&public_key, &msg, &sig).is_err() {
+            return Err(ERR_INVALID_INPUT.to_string());
+        }
 
+        if let Some(local) = self.inner.get(&key).and_then(StorageEntry::as_mutable) {
+            if let Err(err) = maybe_seq_error(&mutable, local) {
+                // return err + local
+            }
+        }
+
+        self.inner.put(key, StorageEntry::Mutable(mutable));
         Ok(None)
     }
 
@@ -128,6 +159,7 @@ impl Store {
         Ok(self
             .inner
             .get(&StorageKey::Immutable(query.target.clone()))
+            .and_then(StorageEntry::as_immutable)
             .cloned())
     }
 
@@ -136,11 +168,29 @@ impl Store {
         if let Some(value) = query.value.as_ref() {
             let key = crypto::hash_id(value.as_slice());
             if key != query.target {
-                return Err("ERR_INVALID_INPUT".to_string());
+                return Err(ERR_INVALID_INPUT.to_string());
             }
-            self.inner.put(StorageKey::Immutable(key), value.clone());
+            self.inner.put(
+                StorageKey::Immutable(key),
+                StorageEntry::Immutable(value.clone()),
+            );
         }
         Ok(None)
+    }
+}
+
+fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
+    let seq_a = a.seq.unwrap_or_default();
+    let seq_b = b.seq.unwrap_or_default();
+    if a.value.is_some() {
+        if seq_a == seq_b && a.value != b.value {
+            return Err("ERR_INVALID_SEQ".to_string());
+        }
+    }
+    if seq_a <= seq_b {
+        Err("ERR_SEQ_MUST_EXCEED_CURRENT".to_string())
+    } else {
+        Ok(())
     }
 }
 

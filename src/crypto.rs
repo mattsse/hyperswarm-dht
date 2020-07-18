@@ -85,6 +85,15 @@ pub fn keypair() -> Keypair {
 }
 
 #[inline]
+pub fn signature(mutable: &Mutable) -> Option<Signature> {
+    if let Some(ref sig) = mutable.signature {
+        Signature::from_bytes(sig).ok()
+    } else {
+        None
+    }
+}
+
+#[inline]
 pub fn signable(mutable: &Mutable) -> Result<Vec<u8>, ()> {
     if let Some(ref val) = mutable.value {
         let cap = SEQ_SEG.len() + 3 + V_SEG.len() + 3 + val.len();
