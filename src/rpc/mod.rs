@@ -20,6 +20,7 @@ use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use tokio::net::UdpSocket;
 use wasm_timer::Instant;
 
+use crate::rpc::query::CommandQueryResponse;
 use crate::{
     kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
     peers::{decode_peers, PeersCodec, PeersEncoding},
@@ -532,19 +533,6 @@ impl RpcDht {
             return;
         }
         if self.commands.contains(&command) {
-            // let res = if ty == Type::Update {
-            //     cmd.update(&query)
-            // } else {
-            //     cmd.query(&query)
-            // }
-            // .map(|val| {
-            //     val.map(|val| {
-            //         let mut bytes = BytesMut::with_capacity(val.len());
-            //         cmd.encode(val, &mut bytes);
-            //         bytes.to_vec()
-            //     })
-            // });
-
             if let Some(_) = msg.valid_target_id_bytes() {
                 let query = CommandQuery {
                     rid: msg.get_request_id(),
@@ -572,7 +560,7 @@ impl RpcDht {
     /// Handle an incoming request.
     ///
     /// Eventually send a response.
-    fn on_request(&mut self, msg: Message, peer: Peer, ty: Type) {
+    fn on_request(&mut self, mut msg: Message, peer: Peer, ty: Type) {
         if let Some(id) = msg.valid_id_bytes() {
             self.add_node(id, peer.clone(), None, msg.decode_to_peer());
         }
@@ -593,12 +581,8 @@ impl RpcDht {
                 return;
             }
             if let Some(key) = msg.valid_target_id_bytes() {
-                self.reply(
-                    msg,
-                    peer.clone(),
-                    Err("Unsupported command".to_string()),
-                    &key,
-                );
+                msg.error = Some("Unsupported command".to_string());
+                self.reply(msg, peer.clone(), key);
             }
             self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                 RequestError::MissingCommand { peer },
@@ -624,7 +608,7 @@ impl RpcDht {
 
     fn on_findnode(&mut self, msg: Message, peer: Peer) {
         if let Some(key) = msg.valid_id_bytes() {
-            let closer_nodes = self.closer_nodes(&key, 20);
+            let closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
             self.io
                 .response(msg, None, Some(closer_nodes), peer.clone());
         }
@@ -656,53 +640,25 @@ impl RpcDht {
     }
 
     /// Reply to a custom command query.
-    pub fn reply_ok(&mut self, query: CommandQuery) {
-        self.reply_query(query, Option::<String>::None)
+    pub fn reply_command(&mut self, resp: impl Into<CommandQueryResponse>) {
+        let resp = resp.into();
+        self.reply(resp.msg, resp.peer, resp.target)
     }
 
-    /// Reply to a custom command query with an error message
-    pub fn reply_err(&mut self, query: CommandQuery, err: impl Into<String>) {
-        self.reply_query(query, Some(err.into()))
-    }
-
-    fn reply_query(&mut self, query: CommandQuery, err: Option<String>) {
-        let closer_nodes = self.closer_nodes(&query.target, usize::from(K_VALUE));
-        let peer = query.node.clone();
-        if let Some(err) = err {
-            self.io
-                .error(query.into(), err, None, Some(closer_nodes), peer);
-        } else {
-            self.io
-                .response(query.into(), None, Some(closer_nodes), peer);
+    fn reply(&mut self, mut msg: Message, peer: Peer, key: IdBytes) {
+        let closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
+        if msg.error.is_some() {
+            let _ = msg.value.take();
         }
-    }
-
-    fn reply(
-        &mut self,
-        msg: Message,
-        peer: Peer,
-        res: Result<Option<Vec<u8>>, String>,
-        key: &IdBytes,
-    ) {
-        let closer_nodes = self.closer_nodes(key, 20);
-        match res {
-            Ok(value) => {
-                self.io
-                    .response(msg, value, Some(closer_nodes), peer.clone());
-            }
-            Err(err) => {
-                self.io
-                    .error(msg, err, None, Some(closer_nodes), peer.clone());
-            }
-        }
+        self.io.reply(msg, peer)
     }
 
     /// Get the `num` closest nodes in the bucket.
-    fn closer_nodes(&mut self, key: &IdBytes, _num: usize) -> Vec<u8> {
+    fn closer_nodes(&mut self, key: IdBytes, num: usize) -> Vec<u8> {
         let nodes = self
             .kbuckets
-            .closest(&KeyBytes::new(key.clone()))
-            .take(usize::from(K_VALUE))
+            .closest(&KeyBytes::new(key))
+            .take(num)
             .collect::<Vec<_>>();
         PeersEncoding::encode(&nodes)
     }

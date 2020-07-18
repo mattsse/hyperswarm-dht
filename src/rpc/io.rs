@@ -20,6 +20,7 @@ use tokio::{net::UdpSocket, stream::Stream};
 use tokio_util::{codec::Encoder, udp::UdpFramed};
 use wasm_timer::Instant;
 
+use crate::rpc::query::CommandQueryResponse;
 use crate::rpc::IdBytes;
 use crate::{
     kbucket::Key,
@@ -332,6 +333,15 @@ where
             error: Some(error),
             value,
         };
+        self.pending_send
+            .push_back(MessageEvent::Response { msg, peer })
+    }
+
+    pub fn reply(&mut self, mut msg: Message, peer: Peer) {
+        msg.id = self.msg_id();
+        if msg.error.is_none() {
+            msg.roundtrip_token = Some(self.token(&peer, &self.secrets.0[..]).to_vec());
+        }
         self.pending_send
             .push_back(MessageEvent::Response { msg, peer })
     }

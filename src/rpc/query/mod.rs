@@ -6,6 +6,7 @@ use futures::task::Poll;
 use log::debug;
 use wasm_timer::Instant;
 
+use crate::peers::PeersEncoding;
 use crate::rpc::IdBytes;
 use crate::{
     kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE},
@@ -526,20 +527,41 @@ pub struct CommandQuery {
     pub value: Option<Vec<u8>>,
 }
 
-impl Into<Message> for CommandQuery {
-    fn into(self) -> Message {
-        Message {
+impl CommandQuery {
+    pub fn into_response_with_error(self, err: impl Into<String>) -> CommandQueryResponse {
+        let mut resp = CommandQueryResponse::from(self);
+        resp.msg.error = Some(err.into());
+        resp
+    }
+}
+/// Outgoing response to a `CommandQuery`
+#[derive(Debug, Clone)]
+pub struct CommandQueryResponse {
+    pub msg: Message,
+    pub peer: Peer,
+    pub target: IdBytes,
+}
+
+impl From<CommandQuery> for CommandQueryResponse {
+    fn from(q: CommandQuery) -> Self {
+        let msg = Message {
             version: Some(VERSION),
-            r#type: self.ty.id(),
-            rid: self.rid.0,
-            to: None,
+            r#type: q.ty.id(),
+            rid: q.rid.0,
+            to: Some(q.node.encode()),
             id: None,
-            target: Some(self.target.to_vec()),
+            target: Some(q.target.to_vec()),
             closer_nodes: None,
             roundtrip_token: None,
-            command: Some(self.command),
+            command: None, //Some(q.command),
             error: None,
-            value: self.value,
+            value: q.value,
+        };
+
+        Self {
+            msg,
+            peer: q.node,
+            target: q.target,
         }
     }
 }

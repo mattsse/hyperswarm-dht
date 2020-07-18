@@ -55,6 +55,8 @@ const DEFAULT_BOOTSTRAP: [&str; 3] = [
     "bootstrap3.hyperdht.org:49737",
 ];
 
+pub(crate) const ERR_INVALID_INPUT: &str = "ERR_INVALID_INPUT";
+
 pub const MUTABLE_STORE_CMD: &str = "mutable-store";
 pub const IMMUTABLE_STORE_CMD: &str = "immutable-store";
 pub const PEERS_CMD: &str = "peers";
@@ -94,8 +96,14 @@ impl HyperDht {
     /// Handle an incoming requests for the registered commands and reply.
     fn on_command(&mut self, q: CommandQuery) {
         match q.command.as_str() {
-            MUTABLE_STORE_CMD => {}
-            IMMUTABLE_STORE_CMD => {}
+            MUTABLE_STORE_CMD => {
+                let resp = self.store.on_command_mut(q);
+                self.inner.reply_command(resp)
+            }
+            IMMUTABLE_STORE_CMD => {
+                let resp = self.store.on_command(q);
+                self.inner.reply_command(resp)
+            }
             PEERS_CMD => self.on_peers(q),
             _s => {
                 // additional registered command -> return
@@ -181,7 +189,7 @@ impl HyperDht {
                         output.encode(&mut buf).unwrap();
                         query.value = Some(buf);
 
-                        self.inner.reply_ok(query);
+                        self.inner.reply_command(query);
                         return;
                     }
 
@@ -200,7 +208,7 @@ impl HyperDht {
                     }
                 }
                 let _ = query.value.take();
-                self.inner.reply_ok(query);
+                self.inner.reply_command(query);
             }
         }
     }
