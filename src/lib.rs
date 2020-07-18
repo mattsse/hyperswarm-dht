@@ -11,17 +11,17 @@ use ed25519_dalek::PublicKey;
 use fnv::FnvHashMap;
 use futures::task::{Context, Poll};
 use futures::Stream;
-use prost::Message;
+use prost::Message as ProstMessage;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use smallvec::alloc::collections::VecDeque;
 
 use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::lru::{CacheKey, PeerCache};
 use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
-use crate::rpc::message::Type;
-use crate::rpc::query::{CommandQuery, QueryId};
+use crate::rpc::message::{Message, Type};
+use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId};
 use crate::rpc::{
-    DhtConfig, IdBytes, PeerId, RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent,
+    DhtConfig, IdBytes, Peer, PeerId, RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent,
 };
 use crate::store::Store;
 
@@ -105,8 +105,15 @@ impl HyperDht {
                 self.inner.reply_command(resp)
             }
             PEERS_CMD => self.on_peers(q),
-            _s => {
-                // additional registered command -> return
+            c => {
+                let command = c.to_string();
+                let resp = CommandQueryResponse::from(q);
+                self.queued_events
+                    .push_back(HyperDhtEvent::CustomCommandQuery {
+                        command,
+                        msg: resp.msg,
+                        peer: resp.peer,
+                    })
             }
         }
     }
@@ -286,7 +293,7 @@ impl HyperDht {
     // A query was completed
     fn query_finished(&mut self, id: QueryId) {
         if let Some(query) = self.queries.remove(&id) {
-            self.queued_events.push_back(query.finalize())
+            self.queued_events.push_back(query.finalize(id))
         }
     }
 }
@@ -395,11 +402,32 @@ impl TryFrom<&[u8]> for QueryOpts {
 #[derive(Debug)]
 pub enum HyperDhtEvent {
     /// The result of [`HyperDht::announce`].
-    AnnounceResult,
+    AnnounceResult {
+        peers: Vec<Peers>,
+        topic: IdBytes,
+        query_id: QueryId,
+    },
     /// The result of [`HyperDht::unannounce`].
-    UnAnnounceResult,
+    UnAnnounceResult {
+        peers: Vec<Peers>,
+        topic: IdBytes,
+        query_id: QueryId,
+    },
     /// The result of [`HyperDht::lookup`].
-    LookupResult,
+    LookupResult {
+        peers: Vec<Peers>,
+        topic: IdBytes,
+        query_id: QueryId,
+    },
+    /// Received a query with a custom command that is not automatically handled by the DHT
+    CustomCommandQuery {
+        /// The unknown command
+        command: String,
+        /// The message we received from the peer.
+        msg: Message,
+        /// The peer the message originated from.
+        peer: Peer,
+    },
 }
 
 pub struct LookupOk {
@@ -437,8 +465,24 @@ impl QueryStreamType {
         }
     }
 
-    fn finalize(self) -> HyperDhtEvent {
-        unimplemented!()
+    fn finalize(self, query_id: QueryId) -> HyperDhtEvent {
+        match self {
+            QueryStreamType::LookUp(inner) => HyperDhtEvent::LookupResult {
+                peers: inner.responses,
+                topic: inner.topic,
+                query_id,
+            },
+            QueryStreamType::Announce(inner) => HyperDhtEvent::AnnounceResult {
+                peers: inner.responses,
+                topic: inner.topic,
+                query_id,
+            },
+            QueryStreamType::UnAnnounce(inner) => HyperDhtEvent::UnAnnounceResult {
+                peers: inner.responses,
+                topic: inner.topic,
+                query_id,
+            },
+        }
     }
 }
 
