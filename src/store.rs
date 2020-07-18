@@ -1,16 +1,15 @@
 use std::hash::{Hash, Hasher};
 
-use fnv::FnvHashMap;
+use ed25519_dalek::PublicKey;
 use lru::LruCache;
 use prost::Message;
 
 use crate::dht_proto::Mutable;
 use crate::rpc::message::Type;
-use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId};
-use crate::rpc::{IdBytes, Peer};
+use crate::rpc::query::{CommandQuery, CommandQueryResponse};
+use crate::rpc::IdBytes;
 use crate::{crypto, ERR_INVALID_INPUT};
 use crate::{IMMUTABLE_STORE_CMD, MUTABLE_STORE_CMD};
-use ed25519_dalek::PublicKey;
 
 enum StorageEntry {
     Mutable(Mutable),
@@ -61,15 +60,15 @@ impl Eq for StorageKey {}
 pub struct Store {
     /// Value cache
     inner: LruCache<StorageKey, StorageEntry>,
-    /// Keep track of all matching values from the DHT.
-    streams: FnvHashMap<QueryId, ()>,
+    // Keep track of all matching values from the DHT.
+    // streams: FnvHashMap<QueryId, ()>,
 }
 
 impl Store {
     pub fn new(cap: usize) -> Self {
         Self {
             inner: LruCache::new(cap),
-            streams: Default::default(),
+            // streams: Default::default(),
         }
     }
 
@@ -215,8 +214,8 @@ fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
 pub struct ValueStream {}
 
 pub struct Value {
-    value: Vec<u8>,
-    salt: Option<Vec<u8>>,
-    signature: Vec<u8>,
-    seq: u64,
+    pub value: Vec<u8>,
+    pub salt: Option<Vec<u8>>,
+    pub signature: Vec<u8>,
+    pub seq: u64,
 }

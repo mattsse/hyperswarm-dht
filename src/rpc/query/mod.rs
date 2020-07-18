@@ -9,14 +9,14 @@ use wasm_timer::Instant;
 use crate::peers::PeersEncoding;
 use crate::rpc::IdBytes;
 use crate::{
-    kbucket::{Key, KeyBytes, ALPHA_VALUE, K_VALUE},
+    kbucket::{Key, ALPHA_VALUE, K_VALUE},
     rpc::{
         io::VERSION,
         message::{Command, Message, Type},
         query::fixed::FixedPeersIter,
         query::peers::PeersIterState,
         query::table::{PeerState, QueryTable},
-        Node, Peer, PeerId, RequestId, Response, ResponseResult,
+        Peer, PeerId, RequestId, Response,
     },
 };
 

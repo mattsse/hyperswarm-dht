@@ -41,9 +41,8 @@ mod dht_proto {
 
 pub mod crypto;
 pub mod kbucket;
-pub mod peers;
-// pub mod record;
 pub mod lru;
+pub mod peers;
 pub mod rpc;
 pub mod store;
 
@@ -91,6 +90,10 @@ impl HyperDht {
             store: Store::new(5000),
             queued_events: Default::default(),
         })
+    }
+
+    fn tally(&mut self, only_ip: bool) {
+        unimplemented!()
     }
 
     /// Handle an incoming requests for the registered commands and reply.
@@ -430,15 +433,15 @@ pub enum HyperDhtEvent {
     },
 }
 
-pub struct LookupOk {
-    /// The DHT node that is returning this data
-    node: PeerId,
-    to: Option<SocketAddr>,
-    /// List of peers
-    peers: Vec<SocketAddr>,
-    /// List of LAN peers
-    local_peers: Vec<SocketAddr>,
-}
+// pub struct LookupOk {
+//     /// The DHT node that is returning this data
+//     node: PeerId,
+//     to: Option<SocketAddr>,
+//     /// List of peers
+//     peers: Vec<SocketAddr>,
+//     /// List of LAN peers
+//     local_peers: Vec<SocketAddr>,
+// }
 
 /// A Response to a query request from a peer
 #[derive(Debug, Clone)]

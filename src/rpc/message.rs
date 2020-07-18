@@ -1,16 +1,12 @@
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Formatter;
-use std::io;
 use std::net::SocketAddr;
 
-use futures::StreamExt;
-use futures_codec::{Decoder, Encoder};
 use prost::Message as ProstMessage;
 
 use crate::kbucket;
 use crate::peers::{decode_peer_ids, decode_peers};
-use crate::rpc::query::CommandQuery;
 use crate::rpc::{IdBytes, Peer, PeerId, RequestId};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -188,11 +184,10 @@ impl Message {
             .and_then(|val| Holepunch::decode(val.as_slice()).ok())
     }
 
-    pub fn set_holepunch(&mut self, holepunch: &Holepunch) -> Result<(), prost::EncodeError> {
+    pub fn set_holepunch(&mut self, holepunch: &Holepunch) {
         let mut buf = Vec::with_capacity(holepunch.encoded_len());
-        holepunch.encode(&mut buf)?;
+        holepunch.encode(&mut buf).unwrap();
         self.value = Some(buf);
-        Ok(())
     }
 
     pub(crate) fn valid_id_bytes(&self) -> Option<IdBytes> {
@@ -201,15 +196,6 @@ impl Message {
 
     pub(crate) fn valid_target_id_bytes(&self) -> Option<IdBytes> {
         Self::valid_key_bytes(self.target.as_ref())
-    }
-
-    /// Check that the len of the key is exact 32 bytes
-    #[inline]
-    pub(crate) fn has_valid_id(&self) -> bool {
-        self.id
-            .as_ref()
-            .map(|id| id.len() == 32)
-            .unwrap_or_default()
     }
 }
 
@@ -229,15 +215,6 @@ impl Type {
             Type::Response => 3,
         }
     }
-}
-
-// TODO handle inputEncoding and outputEncoding differently
-pub trait CommandCodec:
-    Encoder<Item = Vec<u8>, Error = io::Error> + Decoder<Item = Vec<u8>, Error = io::Error>
-{
-    fn update(&mut self, query: &CommandQuery) -> Result<Option<Vec<u8>>, String>;
-
-    fn query(&self, query: &CommandQuery) -> Result<Option<Vec<u8>>, String>;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

@@ -13,7 +13,6 @@ use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
 use futures::{
     stream::Stream,
     task::{Context, Poll},
-    Future,
 };
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
@@ -23,12 +22,11 @@ use wasm_timer::Instant;
 use crate::rpc::query::CommandQueryResponse;
 use crate::{
     kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
-    peers::{decode_peers, PeersCodec, PeersEncoding},
+    peers::PeersEncoding,
     rpc::{
         io::{IoConfig, IoHandler, IoHandlerEvent, MessageEvent, VERSION},
         jobs::PeriodicJob,
-        message::{Command, CommandCodec, Holepunch, Message, Type},
-        protocol::DhtRpcCodec,
+        message::{Command, Holepunch, Message, Type},
         query::{
             table::PeerState, CommandQuery, QueryConfig, QueryEvent, QueryId, QueryPool,
             QueryPoolState, QueryStats, QueryStream, QueryType,
@@ -646,7 +644,7 @@ impl RpcDht {
     }
 
     fn reply(&mut self, mut msg: Message, peer: Peer, key: IdBytes) {
-        let closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
+        let _closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
         if msg.error.is_some() {
             let _ = msg.value.take();
         }
@@ -662,8 +660,6 @@ impl RpcDht {
             .collect::<Vec<_>>();
         PeersEncoding::encode(&nodes)
     }
-
-    fn inject_response(&mut self, _req: Message, _response: Message, _peer: Peer) {}
 
     /// Handle the event generated from the underlying IO
     fn inject_event(&mut self, event: IoHandlerEvent<QueryId>) {

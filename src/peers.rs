@@ -1,7 +1,6 @@
 use std::convert::{TryFrom, TryInto};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use futures_codec::Encoder;
 use smallvec::alloc::borrow::Borrow;
 
 use crate::kbucket::{self, EntryView};
@@ -13,7 +12,7 @@ pub struct PeersCodec {
 }
 
 impl PeersCodec {
-    pub(crate) fn new(id_length: usize) -> Self {
+    pub fn new(id_length: usize) -> Self {
         Self { id_length }
     }
 }

@@ -3,7 +3,7 @@ use std::{iter::FromIterator, num::NonZeroUsize};
 
 use fnv::FnvHashMap;
 
-use crate::kbucket::{Distance, Key, KeyBytes, K_VALUE};
+use crate::kbucket::{Key, K_VALUE};
 use crate::rpc::query::fixed::FixedPeersIter;
 use crate::rpc::{self, IdBytes, PeerId};
 
@@ -30,7 +30,7 @@ impl QueryTable {
         Self { id, target, peers }
     }
 
-    pub(crate) fn peers(&self) -> &FnvHashMap<Key<PeerId>, PeerState> {
+    pub fn peers(&self) -> &FnvHashMap<Key<PeerId>, PeerState> {
         &self.peers
     }
 
@@ -42,7 +42,7 @@ impl QueryTable {
         &self.target
     }
 
-    pub(crate) fn get_peer(&self, peer: &rpc::Peer) -> Option<rpc::Peer> {
+    pub fn get_peer(&self, peer: &rpc::Peer) -> Option<rpc::Peer> {
         self.peers
             .keys()
             .filter(|p| p.preimage().addr == peer.addr)
@@ -136,12 +136,6 @@ pub(crate) struct Peer {
     state: PeerState,
 }
 
-impl Peer {
-    pub(crate) fn state(&self) -> &PeerState {
-        &self.state
-    }
-}
-
 /// The state of a single `Peer`.
 #[derive(Debug, Clone)]
 pub enum PeerState {
@@ -165,21 +159,21 @@ pub enum PeerState {
 }
 
 impl PeerState {
-    fn is_verified(&self) -> bool {
+    pub fn is_verified(&self) -> bool {
         match self {
             PeerState::Succeeded { .. } => true,
             _ => false,
         }
     }
 
-    fn is_not_contacted(&self) -> bool {
+    pub fn is_not_contacted(&self) -> bool {
         match self {
             PeerState::NotContacted => true,
             _ => false,
         }
     }
 
-    pub(crate) fn get_token(&self) -> Option<&Vec<u8>> {
+    pub fn get_token(&self) -> Option<&Vec<u8>> {
         match self {
             PeerState::Succeeded {
                 roundtrip_token, ..

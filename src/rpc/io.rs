@@ -13,14 +13,11 @@ use futures::{
     task::{Context, Poll},
     Sink,
 };
-use log::debug;
 use prost::Message as ProtoMessage;
-use rand::Rng;
 use tokio::{net::UdpSocket, stream::Stream};
-use tokio_util::{codec::Encoder, udp::UdpFramed};
+use tokio_util::udp::UdpFramed;
 use wasm_timer::Instant;
 
-use crate::rpc::query::CommandQueryResponse;
 use crate::rpc::IdBytes;
 use crate::{
     kbucket::Key,
@@ -104,14 +101,6 @@ impl<TUserData> MessageEvent<TUserData> {
             MessageEvent::Response { peer, msg } => (msg, peer),
         }
     }
-
-    fn into_inner(self) -> (Message, Peer) {
-        match self {
-            MessageEvent::Update { peer, msg, .. } => (msg, peer),
-            MessageEvent::Query { peer, msg, .. } => (msg, peer),
-            MessageEvent::Response { peer, msg } => (msg, peer),
-        }
-    }
 }
 
 pub struct IoHandler<TUserData> {
@@ -124,8 +113,6 @@ pub struct IoHandler<TUserData> {
     /// Sent requests we currently wait for a response
     pending_recv: FnvHashMap<RequestId, Request<TUserData>>,
     secrets: ([u8; 32], [u8; 32]),
-
-    queued_events: VecDeque<IoHandlerEvent<TUserData>>,
 
     next_req_id: RequestId,
 
@@ -165,11 +152,10 @@ where
             pending_flush: None,
             pending_recv: Default::default(),
             secrets,
-            queued_events: Default::default(),
             next_req_id: Self::random_id(),
             rotation: config
                 .rotation
-                .unwrap_or_else(|| Duration::from_millis(300_000)),
+                .unwrap_or_else(|| Duration::from_millis(ROTATE_INTERVAL)),
             last_rotation: Instant::now(),
         }
     }
@@ -212,12 +198,7 @@ where
         msg.version = Some(VERSION);
         msg.r#type = Type::Query.id();
         msg.to = Some(referrer.encode());
-        if msg
-            .set_holepunch(&Holepunch::with_to(peer.encode()))
-            .is_err()
-        {
-            return;
-        }
+        msg.set_holepunch(&Holepunch::with_to(peer.encode()));
         self.send_message(MessageEvent::Query {
             msg,
             peer: Peer::from(referrer),
@@ -231,26 +212,9 @@ where
             let (msg, peer) = event.inner();
             let mut buf = Vec::with_capacity(msg.encoded_len());
             msg.encode(&mut buf)?;
-            let _socket = &mut self.socket;
             Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr.clone()))?;
 
             self.pending_flush = Some(event);
-        }
-        Ok(())
-    }
-
-    /// Send the message to the peer
-    ///
-    /// If we're currently busy with sending another message, the message gets queued in
-    fn send_to(&mut self, event: MessageEvent<TUserData>) -> anyhow::Result<()> {
-        if self.pending_flush.is_none() {
-            let (msg, peer) = event.inner();
-            let mut buffer = Vec::with_capacity(msg.encoded_len());
-            msg.encode(&mut buffer)?;
-            Sink::start_send(Pin::new(&mut self.socket), (buffer, peer.addr.clone()))?;
-            self.pending_flush = Some(event);
-        } else {
-            self.pending_send.push_back(event);
         }
         Ok(())
     }
@@ -478,7 +442,7 @@ where
     }
 
     /// Remove the matching request from the sending queue or stop waiting for a response if already sent.
-    fn cancel(
+    pub fn cancel(
         &mut self,
         rid: RequestId,
         _error: Option<String>,
@@ -506,8 +470,9 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
         // flush pending send
         if let Some(ev) = pin.pending_flush.take() {
             if Sink::poll_ready(Pin::new(&mut pin.socket), cx).is_ready() {
-                debug!("sink ready to send {:?}", ev.inner());
-                pin.send_next_pending();
+                if let Err(err) = pin.send_next_pending() {
+                    return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
+                }
 
                 return match ev {
                     MessageEvent::Update {
