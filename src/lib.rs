@@ -3,7 +3,7 @@
 use core::cmp;
 use std::convert::{TryFrom, TryInto};
 use std::io;
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -20,10 +20,10 @@ use crate::lru::{CacheKey, PeerCache};
 use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
 use crate::rpc::message::{Message, Type};
 use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId};
-use crate::rpc::{
-    DhtConfig, IdBytes, Peer, PeerId, RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent,
-};
+use crate::rpc::{RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent};
 use crate::store::Store;
+
+pub use crate::rpc::{DhtConfig, IdBytes, Peer, PeerId};
 
 mod dht_proto {
     use prost::Message;
@@ -77,8 +77,9 @@ pub struct HyperDht {
 impl HyperDht {
     pub async fn with_config(mut config: DhtConfig) -> io::Result<Self> {
         config = config.register_commands(&[MUTABLE_STORE_CMD, IMMUTABLE_STORE_CMD, PEERS_CMD]);
-        if config.bootstrap_nodes().is_empty() {
-            config = config.add_bootstrap_nodes(&DEFAULT_BOOTSTRAP[..]);
+
+        if config.bootstrap_nodes().is_none() {
+            config = config.set_bootstrap_nodes(&DEFAULT_BOOTSTRAP[..]);
         }
 
         Ok(Self {
@@ -90,6 +91,11 @@ impl HyperDht {
             store: Store::new(5000),
             queued_events: Default::default(),
         })
+    }
+
+    #[inline]
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.inner.local_addr()
     }
 
     fn tally(&mut self, only_ip: bool) {
@@ -130,8 +136,8 @@ impl HyperDht {
                 let port = peer
                     .port
                     .and_then(|port| u16::try_from(port).ok())
-                    .unwrap_or_else(|| query.node.addr.port());
-                if let IpAddr::V4(host) = query.node.addr.ip() {
+                    .unwrap_or_else(|| query.peer.addr.port());
+                if let IpAddr::V4(host) = query.peer.addr.ip() {
                     let from = SocketAddr::V4(SocketAddrV4::new(host, port));
 
                     let _remote_record = from.encode();
@@ -340,7 +346,7 @@ impl Stream for HyperDht {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QueryOpts {
     /// The topic to announce
     pub topic: IdBytes,
@@ -353,6 +359,27 @@ pub struct QueryOpts {
 impl QueryOpts {
     fn local_addr_encoded(&self) -> Option<Vec<u8>> {
         self.local_addr.as_ref().map(|addr| addr.encode())
+    }
+
+    pub fn new(topic: impl Into<IdBytes>) -> Self {
+        Self {
+            topic: topic.into(),
+            port: None,
+            local_addr: None,
+        }
+    }
+
+    pub fn port(mut self, port: u32) -> Self {
+        self.port = Some(port);
+        self
+    }
+
+    pub fn local_addr(mut self, local_addr: impl ToSocketAddrs) -> Self {
+        self.local_addr = local_addr
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut iter| iter.next());
+        self
     }
 }
 

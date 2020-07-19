@@ -165,11 +165,18 @@ where
         RequestId(rand::thread_rng().gen())
     }
 
+    #[inline]
     pub(crate) fn msg_id(&self) -> Option<Vec<u8>> {
         self.id.as_ref().map(|k| k.preimage().clone().to_vec())
     }
 
+    #[inline]
+    pub fn is_ephemeral(&self) -> bool {
+        self.id.is_some()
+    }
+
     /// Generate the next request id
+    #[inline]
     fn next_req_id(&mut self) -> RequestId {
         let rid = self.next_req_id;
         self.next_req_id = RequestId(self.next_req_id.0.wrapping_add(1));
@@ -436,6 +443,7 @@ where
         }
     }
 
+    #[inline]
     fn rotate_secrets(&mut self) {
         std::mem::swap(&mut self.secrets.0, &mut self.secrets.1);
         self.last_rotation = Instant::now()

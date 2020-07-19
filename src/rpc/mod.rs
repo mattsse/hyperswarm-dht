@@ -26,13 +26,14 @@ use crate::{
     rpc::{
         io::{IoConfig, IoHandler, IoHandlerEvent, MessageEvent, VERSION},
         jobs::PeriodicJob,
-        message::{Command, Holepunch, Message, Type},
         query::{
             table::PeerState, CommandQuery, QueryConfig, QueryEvent, QueryId, QueryPool,
             QueryPoolState, QueryStats, QueryStream, QueryType,
         },
     },
 };
+
+pub use crate::rpc::message::*;
 
 pub mod io;
 mod jobs;
@@ -73,7 +74,7 @@ pub struct DhtConfig {
     connection_idle_timeout: Duration,
     ephemeral: bool,
     pub(crate) adaptive: bool,
-    bootstrap_nodes: Vec<SocketAddr>,
+    bootstrap_nodes: Option<Vec<SocketAddr>>,
     socket: Option<UdpSocket>,
 }
 
@@ -89,7 +90,7 @@ impl Default for DhtConfig {
             connection_idle_timeout: Duration::from_secs(10),
             ephemeral: false,
             adaptive: false,
-            bootstrap_nodes: vec![],
+            bootstrap_nodes: None,
             socket: None,
             io_config: Default::default(),
         }
@@ -209,20 +210,28 @@ impl DhtConfig {
         self
     }
 
-    /// Set the nodes to bootstrap from
-    pub fn add_bootstrap_nodes<T: ToSocketAddrs>(mut self, addresses: &[T]) -> Self {
-        for addrs in addresses {
-            if let Ok(addrs) = addrs.to_socket_addrs() {
-                for addr in addrs {
-                    self.bootstrap_nodes.push(addr)
-                }
-            }
-        }
+    pub fn empty_bootstrap_nodes(mut self) -> Self {
+        self.bootstrap_nodes = Some(vec![]);
         self
     }
 
-    pub fn bootstrap_nodes(&mut self) -> &mut Vec<SocketAddr> {
-        &mut self.bootstrap_nodes
+    /// Set the nodes to bootstrap from
+    pub fn set_bootstrap_nodes<T: ToSocketAddrs>(mut self, addresses: &[T]) -> Self {
+        let mut bootstrap_nodes = vec![];
+
+        for addrs in addresses {
+            if let Ok(addrs) = addrs.to_socket_addrs() {
+                for addr in addrs {
+                    bootstrap_nodes.push(addr)
+                }
+            }
+        }
+        self.bootstrap_nodes = Some(bootstrap_nodes);
+        self
+    }
+
+    pub fn bootstrap_nodes(&mut self) -> Option<&mut Vec<SocketAddr>> {
+        self.bootstrap_nodes.as_mut()
     }
 }
 
@@ -251,7 +260,7 @@ impl RpcDht {
 
         let io = IoHandler::new(query_id, socket, config.io_config);
 
-        Ok(Self {
+        let mut dht = Self {
             id: local_id.clone(),
             kbuckets: KBucketsTable::new(local_id.clone(), config.kbucket_pending_timeout),
             io,
@@ -260,9 +269,16 @@ impl RpcDht {
             queries: QueryPool::new(local_id, config.query_config),
             commands: config.commands,
             queued_events: Default::default(),
-            bootstrap_nodes: config.bootstrap_nodes,
+            bootstrap_nodes: config.bootstrap_nodes.unwrap_or_default(),
             bootstrapped: false,
-        })
+        };
+        dht.bootstrap();
+        Ok(dht)
+    }
+
+    #[inline]
+    pub fn is_ephemeral(&self) -> bool {
+        self.io.is_ephemeral()
     }
 
     pub fn bootstrap(&mut self) {
@@ -352,7 +368,6 @@ impl RpcDht {
             .map(|e| PeerId::new(e.node.value.addr, e.node.key.preimage().clone()))
             .map(Key::new)
             .collect::<Vec<_>>();
-
         self.queries.add_stream(
             cmd,
             peers,
@@ -594,7 +609,6 @@ impl RpcDht {
         if let Some(ref val) = msg.value {
             if self.id.preimage() != val {
                 // ping wasn't meant for this node
-                // TODO
                 self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
                     RequestError::InvalidValue { peer, msg },
                 )));
