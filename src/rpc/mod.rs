@@ -713,7 +713,7 @@ impl RpcDht {
     }
 
     /// Delegate new query event to the io handler
-    fn inject_query_event(&mut self, id: QueryId, event: QueryEvent) -> Option<RpcDhtEvent> {
+    fn inject_query_event(&mut self, id: QueryId, event: QueryEvent) {
         match event {
             QueryEvent::Query {
                 peer,
@@ -740,7 +740,6 @@ impl RpcDht {
                     .update(command, Some(target), value, peer, token, id);
             }
         }
-        None
     }
 
     /// Handles a finished query.
@@ -800,28 +799,39 @@ impl Stream for RpcDht {
                 return Poll::Ready(Some(event));
             }
 
-            // Look for a finished query.
-            loop {
-                match pin.queries.poll(Instant::now()) {
-                    QueryPoolState::Waiting(Some((query, event))) => {
-                        let id = query.id();
-                        if let Some(event) = pin.inject_query_event(id, event) {
-                            return Poll::Ready(Some(event));
-                        }
-                    }
-                    QueryPoolState::Finished(q) => if let Some(_event) = pin.query_finished(q) {},
-                    QueryPoolState::Timeout(q) => {
-                        if let Some(event) = pin.query_timeout(q) {
-                            return Poll::Ready(Some(event));
-                        }
-                    }
-                    QueryPoolState::Waiting(None) | QueryPoolState::Idle => break,
-                }
-            }
-
             // Look for a sent/received message
-            while let Poll::Ready(Some(event)) = Stream::poll_next(Pin::new(&mut pin.io), cx) {
-                pin.inject_event(event);
+            loop {
+                if let Poll::Ready(Some(event)) = Stream::poll_next(Pin::new(&mut pin.io), cx) {
+                    log::debug!("new io event: {:?}", event);
+                    pin.inject_event(event);
+                } else {
+                    log::debug!("poll queries {}", pin.queries.len());
+                    match pin.queries.poll(now) {
+                        QueryPoolState::Waiting(Some((query, event))) => {
+                            log::debug!("QueryPoolState::Waiting {:?}", event);
+                            let id = query.id();
+                            pin.inject_query_event(id, event);
+                        }
+                        QueryPoolState::Finished(q) => {
+                            log::debug!("QueryPoolState::Finished");
+                            if let Some(event) = pin.query_finished(q) {
+                                log::debug!("query_finished --> return");
+                                return Poll::Ready(Some(event));
+                            }
+                        }
+                        QueryPoolState::Timeout(q) => {
+                            log::debug!("QueryPoolState::Timeout");
+                            if let Some(event) = pin.query_timeout(q) {
+                                log::debug!("query_timeout --> return");
+                                return Poll::Ready(Some(event));
+                            }
+                        }
+                        QueryPoolState::Waiting(None) | QueryPoolState::Idle => {
+                            log::debug!("waiting queries");
+                            break;
+                        }
+                    }
+                }
             }
 
             // No immediate event was produced as a result of a finished query or socket.
