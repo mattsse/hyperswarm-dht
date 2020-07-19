@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use fnv::FnvHashMap;
 use futures::task::Poll;
-use log::debug;
 use wasm_timer::Instant;
 
 use crate::peers::PeersEncoding;
@@ -37,18 +36,12 @@ pub struct QueryPool {
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
     /// Timeout of a single query.
-    ///
-    /// See [`crate::behaviour::KademliaConfig::set_query_timeout`] for details.
     pub timeout: Duration,
 
     /// The replication factor to use.
-    ///
-    /// See [`crate::behaviour::KademliaConfig::set_replication_factor`] for details.
     pub replication_factor: NonZeroUsize,
 
     /// Allowed level of parallelism for iterative queries.
-    ///
-    /// See [`crate::behaviour::KademliaConfig::set_parallelism`] for details.
     pub parallelism: NonZeroUsize,
 }
 
@@ -140,7 +133,6 @@ impl QueryPool {
         let mut timeout = None;
         let mut waiting = None;
 
-        debug!("queries len {} ", self.queries.len());
         for (&query_id, query) in self.queries.iter_mut() {
             query.stats.start = query.stats.start.or(Some(now));
             match query.poll(now) {
@@ -328,6 +320,7 @@ impl QueryStream {
     fn next_bootstrap(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
+                log::debug!("bootstrap query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, false)))
                 } else {
@@ -346,6 +339,7 @@ impl QueryStream {
     fn next_move_closer(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
+                log::debug!("moving closer query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, false)))
                 } else {
@@ -369,6 +363,7 @@ impl QueryStream {
     fn next_update(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
+                log::debug!("update query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, true)))
                 } else {
