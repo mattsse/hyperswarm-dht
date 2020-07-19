@@ -280,19 +280,22 @@ impl QueryStream {
     /// Received a response to a requested driven by this query.
     pub(crate) fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
         // check for errors
+        if resp.is_error() {
+            self.stats.failure += 1;
+            self.peer_iter.on_failure(&peer);
+        } else {
+            self.stats.success += 1;
+            self.peer_iter.on_success(&peer);
+        }
+
         let remote = resp.key(&peer)?;
 
         if resp.is_error() {
-            self.stats.failure += 1;
             if let Some(state) = self.inner.peers_mut().get_mut(&remote) {
                 *state = PeerState::Failed;
             }
-            self.peer_iter.on_failure(&peer);
-            // TODO return error?
             return None;
         }
-
-        self.peer_iter.on_success(&peer);
 
         if let QueryPeerIter::MovingCloser(_) = self.peer_iter {
             for node in resp.decode_closer_nodes() {
@@ -521,7 +524,7 @@ pub struct CommandQuery {
     /// Command def
     pub command: String,
     /// the node who sent the query/update
-    pub node: Peer,
+    pub peer: Peer,
     /// the query/update target (32 byte target)
     pub target: IdBytes,
     /// the query/update payload decoded with the inputEncoding
@@ -547,21 +550,21 @@ impl From<CommandQuery> for CommandQueryResponse {
     fn from(q: CommandQuery) -> Self {
         let msg = Message {
             version: Some(VERSION),
-            r#type: q.ty.id(),
+            r#type: Type::Response.id(),
             rid: q.rid.0,
-            to: Some(q.node.encode()),
+            to: Some(q.peer.encode()),
             id: None,
-            target: Some(q.target.to_vec()),
+            target: None,
             closer_nodes: None,
             roundtrip_token: None,
-            command: None, //Some(q.command),
+            command: None,
             error: None,
             value: q.value,
         };
 
         Self {
             msg,
-            peer: q.node,
+            peer: q.peer,
             target: q.target,
         }
     }
