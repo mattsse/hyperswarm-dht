@@ -540,20 +540,14 @@ impl RpcDht {
     /// This only checks if this custom `command` query is currently registered, but does not reply. Instead the incoming query is delegated to via [`Stream::poll`] as [`CommandQuery`] in [`RpcDhtEvent::RequestResult::RequestOk::CustomCommandRequest`].
     /// It it the command's registrar's responsibility to process this query and eventually reply.
     fn on_command_req(&mut self, ty: Type, command: String, msg: Message, peer: Peer) {
-        if msg.target.is_none() {
-            self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
-                RequestError::MissingTarget { msg, peer },
-            )));
-            return;
-        }
-        if self.commands.contains(&command) {
-            if msg.valid_target_id_bytes().is_some() {
+        if let Some(target) = msg.valid_target_id_bytes() {
+            if self.commands.contains(&command) {
                 let query = CommandQuery {
                     rid: msg.get_request_id(),
                     ty,
                     command,
-                    node: peer,
-                    target: msg.valid_id_bytes().expect("s.a"),
+                    peer,
+                    target,
                     value: msg.value,
                 };
                 self.queued_events.push_back(RpcDhtEvent::RequestResult(Ok(
@@ -561,12 +555,12 @@ impl RpcDht {
                 )));
             } else {
                 self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
-                    RequestError::MissingTarget { msg, peer },
+                    RequestError::UnsupportedCommand { command, msg, peer },
                 )));
             }
         } else {
             self.queued_events.push_back(RpcDhtEvent::RequestResult(Err(
-                RequestError::UnsupportedCommand { command, msg, peer },
+                RequestError::MissingTarget { msg, peer },
             )));
         }
     }
@@ -618,8 +612,11 @@ impl RpcDht {
         self.io.response(msg, Some(peer.encode()), None, peer);
     }
 
+    /// Handle an incoming find peers request.
+    ///
+    /// Reply only if the remote provided a target to get the closest nodes for.
     fn on_findnode(&mut self, msg: Message, peer: Peer) {
-        if let Some(key) = msg.valid_id_bytes() {
+        if let Some(key) = msg.valid_target_id_bytes() {
             let closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
             self.io.response(msg, None, Some(closer_nodes), peer);
         }
