@@ -213,19 +213,6 @@ where
         })
     }
 
-    /// Start sending a new message if any is pending
-    fn send_next_pending(&mut self) -> io::Result<()> {
-        if let Some(event) = self.pending_send.pop_front() {
-            let (msg, peer) = event.inner();
-            let mut buf = Vec::with_capacity(msg.encoded_len());
-            msg.encode(&mut buf)?;
-            Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr))?;
-
-            self.pending_flush = Some(event);
-        }
-        Ok(())
-    }
-
     fn request(&mut self, mut ev: MessageEvent<TUserData>) {
         let (msg, peer) = ev.inner_mut();
         msg.rid = self.next_req_id().0;
@@ -378,18 +365,14 @@ where
 
     fn on_response(&mut self, recv: Message, peer: Peer) -> IoHandlerEvent<TUserData> {
         if let Some(req) = self.pending_recv.remove(&recv.get_request_id()) {
-            if let Some(ref id) = recv.id {
-                if id.len() == 32 {
-                    return IoHandlerEvent::InResponse {
-                        peer,
-                        resp: recv,
-                        req: Box::new(req.message),
-                        user_data: req.user_data,
-                    };
-                }
-            }
+            return IoHandlerEvent::InResponse {
+                peer,
+                resp: recv,
+                req: Box::new(req.message),
+                user_data: req.user_data,
+            };
         }
-        IoHandlerEvent::InResponseBadId { peer, msg: recv }
+        IoHandlerEvent::InResponseBadRequestId { peer, msg: recv }
     }
 
     /// A new `Message` was read from the socket.
@@ -467,6 +450,19 @@ where
                 .and_then(|req| req.into_event().ok())
         }
     }
+
+    fn start_send_next(&mut self) -> io::Result<()> {
+        if self.pending_flush.is_none() {
+            if let Some(event) = self.pending_send.pop_front() {
+                let (msg, peer) = event.inner();
+                let mut buf = Vec::with_capacity(msg.encoded_len());
+                msg.encode(&mut buf)?;
+                Sink::start_send(Pin::new(&mut self.socket), (buf, peer.addr))?;
+                self.pending_flush = Some(event);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
@@ -475,13 +471,14 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        // flush pending send
+        // queue in the next message if not currently flushing
+        if let Err(err) = pin.start_send_next() {
+            return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
+        }
+
+        // flush the message
         if let Some(ev) = pin.pending_flush.take() {
             if Sink::poll_ready(Pin::new(&mut pin.socket), cx).is_ready() {
-                if let Err(err) = pin.send_next_pending() {
-                    return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
-                }
-
                 return match ev {
                     MessageEvent::Update {
                         msg,
@@ -512,8 +509,6 @@ impl<TUserData: Unpin + fmt::Debug + Clone> Stream for IoHandler<TUserData> {
             } else {
                 pin.pending_flush = Some(ev);
             }
-        } else if let Err(err) = pin.send_next_pending() {
-            return Poll::Ready(Some(IoHandlerEvent::OutSocketErr { err }));
         }
 
         // read from socket
@@ -566,6 +561,6 @@ pub enum IoHandlerEvent<TUserData> {
     InMessageErr { err: io::Error, peer: Peer },
     /// Error while reading from socket
     InSocketErr { err: io::Error },
-    /// `msg` id was invalid
-    InResponseBadId { msg: Message, peer: Peer },
+    /// Received a response with a request id that was doesn't match any pending responses.
+    InResponseBadRequestId { msg: Message, peer: Peer },
 }

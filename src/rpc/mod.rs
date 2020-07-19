@@ -518,7 +518,7 @@ impl RpcDht {
             )))
     }
 
-    /// Process a response
+    /// Process a response.
     fn on_response(&mut self, req: Box<Message>, resp: Message, peer: Peer, id: QueryId) {
         if req.is_ping() {
             self.on_pong(resp, peer);
@@ -684,9 +684,8 @@ impl RpcDht {
             }
             IoHandlerEvent::InMessageErr { .. } => {}
             IoHandlerEvent::InSocketErr { .. } => {}
-            IoHandlerEvent::InResponseBadId { peer, .. } => {
-                // a bad or non existing id was supplied in the response from the peer
-                // ephemeral nodes won't send their id, therefor responses will end up here
+            IoHandlerEvent::InResponseBadRequestId { peer, .. } => {
+                // received a response that did not match any issued requests
                 self.remove_node(&peer);
             }
             IoHandlerEvent::OutRequest { .. } => {
