@@ -39,6 +39,7 @@ mod jobs;
 pub mod message;
 pub mod protocol;
 pub mod query;
+pub mod udp;
 
 pub struct RpcDht {
     /// Identifier of this node
