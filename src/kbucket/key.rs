@@ -1,3 +1,4 @@
+#![allow(clippy::ptr_offset_with_cast, clippy::assign_op_pattern, clippy::transmute_ptr_to_ptr)]
 // Copyright 2018 Parity Technologies (UK) Ltd.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
