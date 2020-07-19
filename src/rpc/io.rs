@@ -14,8 +14,7 @@ use futures::{
     Sink,
 };
 use prost::Message as ProtoMessage;
-use tokio::{net::UdpSocket, stream::Stream};
-use tokio_util::udp::UdpFramed;
+use async_std::{net::UdpSocket, stream::Stream};
 use wasm_timer::Instant;
 
 use crate::rpc::IdBytes;
@@ -30,6 +29,7 @@ use crate::{
         Peer, RequestId,
     },
 };
+use crate::rpc::udp::UdpFramed;
 
 pub const VERSION: u64 = 1;
 

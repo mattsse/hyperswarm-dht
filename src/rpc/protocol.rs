@@ -1,10 +1,10 @@
 use std::io;
 
-use bytes::BytesMut;
-use prost::Message as ProstMessage;
-use tokio_util::codec::{Decoder, Encoder};
-
 use crate::rpc::message::Message;
+use bytes::BytesMut;
+use futures::io::Error;
+use futures_codec::{Decoder, Encoder};
+use prost::Message as ProstMessage;
 
 /// Rpc codec for the framing
 #[derive(Debug, Clone, Default)]
@@ -20,10 +20,11 @@ impl Decoder for DhtRpcCodec {
     }
 }
 
-impl Encoder<Vec<u8>> for DhtRpcCodec {
+impl Encoder for DhtRpcCodec {
+    type Item = Vec<u8>;
     type Error = io::Error;
 
-    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.extend_from_slice(&item);
         Ok(())
     }

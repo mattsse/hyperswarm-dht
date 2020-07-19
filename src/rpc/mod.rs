@@ -16,7 +16,7 @@ use futures::{
 };
 use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use tokio::net::UdpSocket;
+use async_std::net::UdpSocket;
 use wasm_timer::Instant;
 
 use crate::rpc::query::CommandQueryResponse;
@@ -110,7 +110,7 @@ impl DhtConfig {
     }
 
     /// Create a new UDP socket and attempt to bind it to the addr provided.
-    pub async fn bind<A: tokio::net::ToSocketAddrs>(
+    pub async fn bind<A: async_std::net::ToSocketAddrs>(
         mut self,
         addr: A,
     ) -> Result<Self, (Self, std::io::Error)> {
