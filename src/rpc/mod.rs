@@ -18,6 +18,7 @@ use futures::{
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use wasm_timer::Instant;
 
+pub use crate::rpc::message::*;
 use crate::rpc::query::CommandQueryResponse;
 use crate::{
     kbucket::{self, Entry, KBucketsTable, Key, KeyBytes, NodeStatus, K_VALUE},
@@ -31,8 +32,6 @@ use crate::{
         },
     },
 };
-
-pub use crate::rpc::message::*;
 
 pub mod io;
 mod jobs;

@@ -1,12 +1,13 @@
+use std::convert::TryInto;
+
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
 use blake2::{Blake2b, VarBlake2b};
+use ed25519_dalek::ed25519::signature::Signature as Sig;
 use ed25519_dalek::SignatureError;
 pub use ed25519_dalek::{ExpandedSecretKey, Keypair, PublicKey, SecretKey, Signature, Verifier};
 
 use crate::dht_proto::Mutable;
 use crate::rpc::{fill_random_bytes, IdBytes};
-use ed25519_dalek::ed25519::signature::Signature as Sig;
-use std::convert::TryInto;
 
 /// VALUE_MAX_SIZE + packet overhead (i.e. the key etc.)
 /// should be less than the network MTU, normally 1400 bytes

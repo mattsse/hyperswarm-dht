@@ -20,10 +20,9 @@ use crate::lru::{CacheKey, PeerCache};
 use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
 use crate::rpc::message::{Message, Type};
 use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId, QueryStats};
+pub use crate::rpc::{DhtConfig, IdBytes, Peer, PeerId};
 use crate::rpc::{RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent};
 use crate::store::Store;
-
-pub use crate::rpc::{DhtConfig, IdBytes, Peer, PeerId};
 
 mod dht_proto {
     use prost::Message;
@@ -610,9 +609,10 @@ impl QueryStreamInner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use async_std::net::Ipv4Addr;
     use futures::StreamExt;
+
+    use super::*;
 
     #[async_std::test]
     async fn local_bootstrap() -> Result<(), Box<dyn std::error::Error>> {

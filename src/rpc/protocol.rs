@@ -1,10 +1,11 @@
 use std::io;
 
-use crate::rpc::message::Message;
 use bytes::BytesMut;
 use futures::io::Error;
 use futures_codec::{Decoder, Encoder};
 use prost::Message as ProstMessage;
+
+use crate::rpc::message::Message;
 
 /// Rpc codec for the framing
 #[derive(Debug, Clone, Default)]

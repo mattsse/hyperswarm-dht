@@ -1,16 +1,15 @@
-use futures_codec::{Decoder, Encoder};
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use async_std::{
     net::UdpSocket,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     stream::Stream,
 };
-
 use bytes::{BufMut, BytesMut};
 use futures::{pin_mut, ready, Future, FutureExt, Sink};
-use std::io;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use futures_codec::{Decoder, Encoder};
 
 /// A unified `Stream` and `Sink` interface to an underlying `UdpSocket`, using
 /// the `Encoder` and `Decoder` traits to encode and decode frames.
@@ -191,10 +190,11 @@ impl<C> UdpFramed<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::Buf;
     use futures::{SinkExt, StreamExt};
     use futures_codec::BytesCodec;
+
+    use super::*;
 
     const QUICK_BROWN_FOX: &str = "The quick brown fox jumps over the lazy dog";
 
