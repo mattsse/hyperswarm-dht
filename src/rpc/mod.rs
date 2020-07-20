@@ -287,13 +287,11 @@ impl RpcDht {
     pub fn bootstrap(&mut self) {
         if !self.bootstrap_nodes.is_empty() {
             self.query(Command::FindNode, self.id.clone(), None);
-        } else {
-            if !self.bootstrapped {
-                self.queued_events.push_back(RpcDhtEvent::Bootstrapped {
-                    stats: QueryStats::empty(),
-                });
-                self.bootstrapped = true;
-            }
+        } else if !self.bootstrapped {
+            self.queued_events.push_back(RpcDhtEvent::Bootstrapped {
+                stats: QueryStats::empty(),
+            });
+            self.bootstrapped = true;
         }
     }
 
@@ -786,13 +784,11 @@ impl RpcDht {
         }
 
         // first `find_node` query is issued as bootstrap
-        if is_find_node {
-            if !self.bootstrapped {
-                self.bootstrapped = true;
-                return Some(RpcDhtEvent::Bootstrapped {
-                    stats: result.stats,
-                });
-            }
+        if is_find_node && !self.bootstrapped {
+            self.bootstrapped = true;
+            return Some(RpcDhtEvent::Bootstrapped {
+                stats: result.stats,
+            });
         }
 
         Some(RpcDhtEvent::QueryResult {

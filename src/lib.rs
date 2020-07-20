@@ -165,7 +165,7 @@ impl HyperDht {
         let get = get.into();
         if get.salt.as_ref().map(|s| s.len() > 64).unwrap_or_default() {
             // salt size must be no greater than 64 bytes
-            return Err((()));
+            return Err(());
         }
 
         let value = Mutable {
@@ -229,8 +229,13 @@ impl HyperDht {
         let query_id =
             self.inner
                 .update(MUTABLE_STORE_CMD, kbucket::Key::new(opts.id()), Some(buf));
-        self.queries
-            .insert(query_id, QueryStreamType::PutMutable { query_id, opts });
+        self.queries.insert(
+            query_id,
+            QueryStreamType::PutMutable {
+                query_id,
+                opts: Box::new(opts),
+            },
+        );
 
         Ok(query_id)
     }
@@ -688,7 +693,7 @@ pub enum HyperDhtEvent {
     /// The result of [`HyperDht::put_mutable`].
     PutMutableResult {
         /// The options used to sign the value.
-        opts: PutOpts,
+        opts: Box<PutOpts>,
         /// Tracking id of the query
         query_id: QueryId,
     },
@@ -822,7 +827,7 @@ enum QueryStreamType {
     PutMutable {
         query_id: QueryId,
         /// How to verify the proof
-        opts: PutOpts,
+        opts: Box<PutOpts>,
     },
     GetImmutable(GetResult<Vec<u8>>),
     GetMutable {
