@@ -272,39 +272,43 @@ impl QueryStream {
     /// Received a response to a requested driven by this query.
     pub(crate) fn inject_response(&mut self, mut resp: Message, peer: Peer) -> Option<Response> {
         // check for errors
+
+        let remote = resp.key(&peer);
+
         if resp.is_error() {
             self.stats.failure += 1;
             self.peer_iter.on_failure(&peer);
-        } else {
-            self.stats.success += 1;
-            self.peer_iter.on_success(&peer);
-        }
-
-        let remote = resp.key(&peer)?;
-
-        if resp.is_error() {
-            if let Some(state) = self.inner.peers_mut().get_mut(&remote) {
-                *state = PeerState::Failed;
+            if let Some(ref remote) = remote {
+                if let Some(state) = self.inner.peers_mut().get_mut(remote) {
+                    *state = PeerState::Failed;
+                }
             }
             return None;
         }
 
-        if let QueryPeerIter::MovingCloser(_) = self.peer_iter {
+        self.stats.success += 1;
+        self.peer_iter.on_success(&peer);
+
+        if let QueryPeerIter::Bootstrap(_) = self.peer_iter {
             for node in resp.decode_closer_nodes() {
                 self.inner.add_unverified(node);
             }
             if !self.ty.is_query() {
                 let to = resp.decode_to_peer();
                 if let Some(token) = resp.roundtrip_token {
-                    self.inner.add_verified(remote, token, to);
+                    if let Some(remote) = remote {
+                        self.inner.add_verified(remote, token, to);
+                    }
                 }
                 return None;
             }
         }
 
         if let Some(token) = resp.roundtrip_token.take() {
-            self.inner
-                .add_verified(remote, token, resp.decode_to_peer());
+            if let Some(remote) = remote {
+                self.inner
+                    .add_verified(remote, token, resp.decode_to_peer());
+            }
         }
 
         Some(Response {
@@ -312,7 +316,8 @@ impl QueryStream {
             ty: self.ty,
             cmd: self.cmd.clone(),
             to: resp.decode_to_peer(),
-            peer: PeerId::new(peer.addr, resp.valid_id_bytes().expect("s.a")),
+            peer: peer.addr,
+            peer_id: resp.valid_id_bytes(),
             value: resp.value,
         })
     }
@@ -320,7 +325,6 @@ impl QueryStream {
     fn next_bootstrap(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
-                log::debug!("bootstrap query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, false)))
                 } else {
@@ -339,7 +343,6 @@ impl QueryStream {
     fn next_move_closer(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
-                log::debug!("moving closer query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, false)))
                 } else {
@@ -349,7 +352,6 @@ impl QueryStream {
             PeersIterState::WaitingAtCapacity => Poll::Pending,
             PeersIterState::Finished => {
                 if self.ty.is_update() {
-                    self.inner.set_all_not_contacted();
                     self.peer_iter =
                         QueryPeerIter::Updating(self.inner.closest_peers_iter(self.parallelism));
                     self.poll_iter()
@@ -363,7 +365,6 @@ impl QueryStream {
     fn next_update(&mut self, state: PeersIterState) -> Poll<Option<QueryEvent>> {
         match state {
             PeersIterState::Waiting(peer) => {
-                log::debug!("update query {:?} ", peer);
                 if let Some(peer) = peer {
                     Poll::Ready(Some(self.send(peer, true)))
                 } else {
@@ -375,7 +376,7 @@ impl QueryStream {
         }
     }
 
-    fn send(&self, peer: Peer, update: bool) -> QueryEvent {
+    fn send(&mut self, peer: Peer, update: bool) -> QueryEvent {
         if update {
             if let Some(token) = self.inner.get_token(&peer) {
                 QueryEvent::Update {
@@ -386,6 +387,8 @@ impl QueryStream {
                     value: self.value.clone(),
                 }
             } else {
+                // don't wait for a response
+                self.peer_iter.on_failure(&peer);
                 QueryEvent::MissingRoundtripToken { peer }
             }
         } else if self.ty.is_query() {

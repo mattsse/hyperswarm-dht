@@ -73,7 +73,7 @@ impl QueryTable {
         let mut peers = self
             .peers
             .iter()
-            .filter(|(_, s)| s.is_not_contacted())
+            .filter(|(_, s)| s.is_verified())
             .map(|(p, _)| p)
             .collect::<Vec<_>>();
 
@@ -89,6 +89,9 @@ impl QueryTable {
     }
 
     pub(crate) fn add_unverified(&mut self, peer: PeerId) {
+        if &peer.id == self.id.preimage() {
+            return;
+        }
         self.peers.insert(Key::new(peer), PeerState::NotContacted);
     }
 
