@@ -225,6 +225,35 @@ pub enum Command {
     Unknown(String),
 }
 
+impl Command {
+    pub fn is_ping(&self) -> bool {
+        match self {
+            Command::Ping => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_find_node(&self) -> bool {
+        match self {
+            Command::FindNode => true,
+            _ => false,
+        }
+    }
+    pub fn is_holepunch(&self) -> bool {
+        match self {
+            Command::Holepunch => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_custom(&self, s: &str) -> bool {
+        match self {
+            Command::Unknown(cmd) => cmd.as_str() == s,
+            _ => false,
+        }
+    }
+}
+
 impl<T: AsRef<str>> From<T> for Command {
     fn from(s: T) -> Self {
         match s.as_ref() {

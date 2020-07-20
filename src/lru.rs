@@ -278,6 +278,7 @@ impl<T: Hash + Eq> CacheEntry<T> {
 }
 
 /// Implementation of a LRU Cache with expiration
+#[derive(Debug)]
 pub struct PeerCache {
     /// Cache that stores the peers and their expiration timestamps
     map: FnvHashMap<CacheKey, AddressCache>,
