@@ -428,6 +428,11 @@ impl TryFrom<&[u8]> for QueryOpts {
 
 #[derive(Debug)]
 pub enum HyperDhtEvent {
+    /// The dht is now bootstrapped
+    Bootstrapped {
+        /// Execution statistics from the bootstrap query.
+        stats: QueryStats,
+    },
     /// The result of [`HyperDht::announce`].
     AnnounceResult {
         peers: Vec<Peers>,
@@ -441,11 +446,6 @@ pub enum HyperDhtEvent {
         peers: Vec<Peers>,
         topic: IdBytes,
         query_id: QueryId,
-    },
-    /// The dht is now bootstrapped
-    Bootstrapped {
-        /// Execution statistics from the bootstrap query.
-        stats: QueryStats,
     },
     /// Received a query with a custom command that is not automatically handled by the DHT
     CustomCommandQuery {
@@ -492,6 +492,16 @@ impl Lookup {
         self.peers
             .iter()
             .flat_map(|peer| peer.peers.iter().chain(peer.local_peers.iter()))
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.peers.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.peers.is_empty()
     }
 }
 
@@ -594,6 +604,100 @@ impl QueryStreamInner {
                 peers,
                 local_peers,
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_std::net::Ipv4Addr;
+    use futures::StreamExt;
+
+    #[async_std::test]
+    async fn local_bootstrap() -> Result<(), Box<dyn std::error::Error>> {
+        // ephemeral node used for bootstrapping
+        let mut bs =
+            HyperDht::with_config(DhtConfig::default().empty_bootstrap_nodes().ephemeral()).await?;
+
+        let bs_addr = bs.local_addr()?;
+
+        async_std::task::spawn(async move {
+            loop {
+                // process each incoming message
+                bs.next().await;
+            }
+        });
+
+        // represents stateful nodes in the DHT
+        let mut state =
+            HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
+
+        let (tx, rx) = futures::channel::oneshot::channel();
+
+        async_std::task::spawn(async move {
+            if let Some(HyperDhtEvent::Bootstrapped { .. }) = state.next().await {
+                // after initial bootstrapping the state`s address is included in the bs` routing table. Then the `node` can start to announce
+                tx.send(()).expect("Failed to send");
+            } else {
+                panic!("only expected boostrap result")
+            }
+            loop {
+                state.next().await;
+            }
+        });
+
+        let port = 12345;
+        // announce options
+        let opts = QueryOpts::new(IdBytes::random()).port(port);
+
+        let mut node = HyperDht::with_config(
+            DhtConfig::default()
+                .ephemeral()
+                .set_bootstrap_nodes(&[bs_addr]),
+        )
+        .await?;
+
+        rx.await;
+
+        let mut unannounced = false;
+        loop {
+            if let Some(event) = node.next().await {
+                match event {
+                    HyperDhtEvent::Bootstrapped { .. } => {
+                        // announce topic and port
+                        node.announce(opts.clone());
+                    }
+                    HyperDhtEvent::AnnounceResult { .. } => {
+                        // look up the announced topic
+                        node.lookup(opts.topic.clone());
+                    }
+                    HyperDhtEvent::LookupResult { lookup, .. } => {
+                        if unannounced {
+                            // after un announcing lookup yields zero peers
+                            assert!(lookup.is_empty());
+                            return Ok(());
+                        }
+                        assert_eq!(lookup.topic, opts.topic);
+                        assert_eq!(lookup.len(), 1);
+                        let remotes = lookup.remotes().cloned().collect::<Vec<_>>();
+                        assert_eq!(remotes.len(), 1);
+
+                        let mut node_addr = node.local_addr()?;
+                        if let SocketAddr::V4(mut addr) = node_addr {
+                            addr.set_port(port as u16);
+                            assert_eq!(remotes[0], SocketAddr::V4(addr));
+                        }
+                        // unannounce the port
+                        node.unannounce(opts.clone());
+                    }
+                    HyperDhtEvent::UnAnnounceResult { .. } => {
+                        unannounced = true;
+                        node.lookup(opts.topic.clone());
+                    }
+                    HyperDhtEvent::CustomCommandQuery { .. } => {}
+                }
+            }
         }
     }
 }

@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     RpcDhtEvent::QueryResult { id: _, cmd, stats } => {
                         println!("b query result {} {:?}", cmd, stats)
                     }
+                    RpcDhtEvent::Bootstrapped { .. } => {}
                 }
             }
         }
@@ -54,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         RpcDhtEvent::ResponseResult(_) => println!("response result"),
                         RpcDhtEvent::RoutingUpdated { .. } => println!("routing updated"),
                         RpcDhtEvent::QueryResult { .. } => println!("query result"),
+                        RpcDhtEvent::Bootstrapped { .. } => {}
                     }
                 }
             }
