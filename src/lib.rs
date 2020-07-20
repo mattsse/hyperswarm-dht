@@ -8,6 +8,7 @@ use std::net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::pin::Pin;
 use std::time::Duration;
 
+use bytes::Buf;
 use ed25519_dalek::{Keypair, PublicKey, Signature};
 use either::Either;
 use fnv::FnvHashMap;
@@ -25,7 +26,6 @@ use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId, QueryStats}
 pub use crate::rpc::{DhtConfig, IdBytes, Peer, PeerId};
 use crate::rpc::{RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent};
 use crate::store::{StorageEntry, StorageKey, Store, PUT_VALUE_MAX_SIZE};
-use bytes::Buf;
 
 mod dht_proto {
     use prost::Message;
@@ -1031,7 +1031,7 @@ mod tests {
                         node.unannounce(opts.clone());
                     }
                     HyperDhtEvent::UnAnnounceResult { .. } => {
-                        /// 4. another lookup that now comes up empty
+                        // 4. another lookup that now comes up empty
                         unannounced = true;
                         node.lookup(opts.topic.clone());
                     }
