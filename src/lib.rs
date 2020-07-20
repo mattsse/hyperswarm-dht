@@ -2,12 +2,14 @@
 
 use core::cmp;
 use std::convert::{TryFrom, TryInto};
+use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::pin::Pin;
 use std::time::Duration;
 
-use ed25519_dalek::PublicKey;
+use ed25519_dalek::{Keypair, PublicKey, Signature};
+use either::Either;
 use fnv::FnvHashMap;
 use futures::task::{Context, Poll};
 use futures::Stream;
@@ -15,14 +17,15 @@ use prost::Message as ProstMessage;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use smallvec::alloc::collections::VecDeque;
 
-use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
+use crate::dht_proto::{encode_input, Mutable, PeersInput, PeersOutput};
 use crate::lru::{CacheKey, PeerCache};
 use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
 use crate::rpc::message::{Message, Type};
 use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId, QueryStats};
 pub use crate::rpc::{DhtConfig, IdBytes, Peer, PeerId};
 use crate::rpc::{RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent};
-use crate::store::Store;
+use crate::store::{StorageEntry, StorageKey, Store, PUT_VALUE_MAX_SIZE};
+use bytes::Buf;
 
 mod dht_proto {
     use prost::Message;
@@ -124,6 +127,112 @@ impl HyperDht {
                     })
             }
         }
+    }
+
+    /// Fetch an mutable value from the DHT.
+    ///
+    /// if the querying node already has the immutable value then there's no need to query the dht. In that case [`Either::Right`] is returned containing the key and the corresponding immutable value.
+    pub fn get_immutable(
+        &mut self,
+        key: impl Into<IdBytes>,
+    ) -> Either<QueryId, (IdBytes, Vec<u8>)> {
+        let key = key.into();
+        if let Some(value) = self
+            .store
+            .get(&StorageKey::Immutable(key.clone()))
+            .and_then(StorageEntry::as_immutable)
+            .cloned()
+        {
+            // value already present
+            return Either::Right((key, value));
+        }
+
+        // query the DHT
+        let query_id = self
+            .inner
+            .query(IMMUTABLE_STORE_CMD, kbucket::Key::new(key.clone()), None);
+
+        self.queries.insert(
+            query_id,
+            QueryStreamType::GetImmutable(GetResult::new(key, query_id)),
+        );
+
+        Either::Left(query_id)
+    }
+
+    /// Fetch an mutable value from the DHT.
+    pub fn get_mutable(&mut self, get: impl Into<GetOpts>) -> Result<QueryId, ()> {
+        let get = get.into();
+        if get.salt.as_ref().map(|s| s.len() > 64).unwrap_or_default() {
+            // salt size must be no greater than 64 bytes
+            return Err((()));
+        }
+
+        let value = Mutable {
+            value: None,
+            signature: None,
+            seq: Some(get.seq),
+            salt: get.salt,
+        };
+        let mut buf = Vec::with_capacity(value.encoded_len());
+        value.encode(&mut buf).unwrap();
+
+        // query the DHT
+        let query_id = self.inner.query(
+            MUTABLE_STORE_CMD,
+            kbucket::Key::new(get.key.clone()),
+            Some(buf),
+        );
+
+        self.queries.insert(
+            query_id,
+            QueryStreamType::GetMutable {
+                get: GetResult::new(get.key, query_id),
+                value,
+            },
+        );
+        Ok(query_id)
+    }
+
+    /// Store an immutable value in the DHT.
+    pub fn put_immutable(&mut self, value: &[u8]) -> Result<QueryId, ()> {
+        let value = value.to_vec();
+        if value.len() > PUT_VALUE_MAX_SIZE {
+            return Err(());
+        }
+        let key = crypto::hash_id(&value);
+        // set locally for easy cached retrieval
+        self.store.put_immutable(key.clone(), value.clone());
+
+        let query_id = self.inner.update(
+            IMMUTABLE_STORE_CMD,
+            kbucket::Key::new(key.clone()),
+            Some(value),
+        );
+
+        self.queries
+            .insert(query_id, QueryStreamType::PutImmutable { query_id, key });
+        Ok(query_id)
+    }
+
+    /// Store an mutable value in the DHT.
+    pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> Result<QueryId, ()> {
+        let value = value.to_vec();
+        if value.len() > PUT_VALUE_MAX_SIZE {
+            return Err(());
+        }
+
+        let value = opts.mutable(value.to_vec());
+        let mut buf = Vec::with_capacity(value.encoded_len());
+        value.encode(&mut buf).unwrap();
+
+        let query_id =
+            self.inner
+                .update(MUTABLE_STORE_CMD, kbucket::Key::new(opts.id()), Some(buf));
+        self.queries
+            .insert(query_id, QueryStreamType::PutMutable { query_id, opts });
+
+        Ok(query_id)
     }
 
     /// Callback for an incoming `peers` command query
@@ -345,6 +454,121 @@ impl Stream for HyperDht {
         }
     }
 }
+#[derive(Debug)]
+pub struct PutOpts {
+    /// The crypto to identification and offline signing of the value
+    pub key: PutKey,
+    /// A number which should be increased every time put is passed a new value for the same keypair
+    pub seq: u64,
+    /// If supplied it will salt the signature used to verify mutable values.
+    pub salt: Option<Vec<u8>>,
+}
+
+impl PutOpts {
+    pub fn new(key: PutKey) -> Self {
+        Self {
+            key,
+            seq: 0,
+            salt: None,
+        }
+    }
+
+    fn mutable(&self, value: Vec<u8>) -> Mutable {
+        use ed25519_dalek::ed25519::signature::Signature;
+        let signature = match &self.key {
+            PutKey::KeyPair(kp) => crypto::sign(&kp.public, &kp.secret, &value)
+                .as_bytes()
+                .to_vec(),
+            PutKey::Signature((_, sig)) => sig.as_bytes().to_vec(),
+        };
+
+        Mutable {
+            value: Some(value),
+            signature: Some(signature),
+            seq: Some(self.seq),
+            salt: self.salt.clone(),
+        }
+    }
+
+    fn id(&self) -> IdBytes {
+        match &self.key {
+            PutKey::KeyPair(kp) => (&kp.public).into(),
+            PutKey::Signature((pk, _)) => pk.into(),
+        }
+    }
+
+    pub fn with_keypair(keypair: Keypair) -> Self {
+        Self {
+            key: PutKey::KeyPair(keypair),
+            seq: 0,
+            salt: None,
+        }
+    }
+
+    pub fn with_pk_and_signature(pk: PublicKey, signature: Signature) -> Self {
+        Self {
+            key: PutKey::Signature((pk, signature)),
+            seq: 0,
+            salt: None,
+        }
+    }
+
+    pub fn seq(mut self, seq: u64) -> Self {
+        self.seq = seq;
+        self
+    }
+
+    pub fn salt(mut self, salt: Vec<u8>) -> Self {
+        self.salt = Some(salt);
+        self
+    }
+}
+
+#[derive(Debug)]
+pub enum PutKey {
+    KeyPair(Keypair),
+    /// Use a signature instead of the key pair's private key
+    Signature((PublicKey, Signature)),
+}
+
+#[derive(Debug)]
+pub struct GetOpts {
+    /// The public key
+    pub key: IdBytes,
+    /// A number which will only return values with corresponding seq values that are greater than or equal to the supplied seq option
+    pub seq: u64,
+    /// If supplied it will salt the signature used to verify mutable values.
+    pub salt: Option<Vec<u8>>,
+}
+
+impl GetOpts {
+    pub fn new(key: impl Into<IdBytes>) -> Self {
+        Self {
+            key: key.into(),
+            seq: 0,
+            salt: None,
+        }
+    }
+
+    pub fn with_seq(key: impl Into<IdBytes>, seq: u64) -> Self {
+        Self {
+            key: key.into(),
+            seq,
+            salt: None,
+        }
+    }
+
+    pub fn salt(mut self, salt: Vec<u8>) -> Self {
+        self.salt = Some(salt);
+        self
+    }
+}
+
+impl<T: Into<IdBytes>> From<T> for GetOpts {
+    fn from(key: T) -> Self {
+        GetOpts::new(key)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryOpts {
@@ -435,17 +659,43 @@ pub enum HyperDhtEvent {
     /// The result of [`HyperDht::announce`].
     AnnounceResult {
         peers: Vec<Peers>,
+        /// The announced topic.
         topic: IdBytes,
+        /// Tracking id of the query
         query_id: QueryId,
     },
     /// The result of [`HyperDht::lookup`].
-    LookupResult { lookup: Lookup, query_id: QueryId },
+    LookupResult {
+        /// All responses
+        lookup: Lookup,
+        /// /// Tracking id of the query
+        query_id: QueryId,
+    },
     /// The result of [`HyperDht::unannounce`].
     UnAnnounceResult {
         peers: Vec<Peers>,
         topic: IdBytes,
+        /// Tracking id of the query
         query_id: QueryId,
     },
+    /// The result of [`HyperDht::put_immutable`].
+    PutImmutableResult {
+        /// The generated key (hash for that value)
+        key: IdBytes,
+        /// Tracking id of the query
+        query_id: QueryId,
+    },
+    /// The result of [`HyperDht::put_mutable`].
+    PutMutableResult {
+        /// The options used to sign the value.
+        opts: PutOpts,
+        /// Tracking id of the query
+        query_id: QueryId,
+    },
+    /// The result of [`HyperDht::get_immutable`].
+    GetImmutableResult(GetResult<Vec<u8>>),
+    /// The result of [`HyperDht::get_mutable`].
+    GetMutableResult(GetResult<Mutable>),
     /// Received a query with a custom command that is not automatically handled by the DHT
     CustomCommandQuery {
         /// The unknown command
@@ -455,6 +705,48 @@ pub enum HyperDhtEvent {
         /// The peer the message originated from.
         peer: Peer,
     },
+}
+
+#[derive(Debug)]
+pub struct GetResult<T: fmt::Debug> {
+    /// The identifier for the value
+    pub key: IdBytes,
+    /// All matching immutable values from the DHT together with the id of the responding node
+    pub responses: Vec<PeerResponseItem<T>>,
+    /// Tracking id of the query
+    pub query_id: QueryId,
+}
+
+impl<T: fmt::Debug> GetResult<T> {
+    fn new(key: IdBytes, query_id: QueryId) -> Self {
+        Self {
+            key,
+            responses: Vec::new(),
+            query_id,
+        }
+    }
+
+    /// Returns an iterator over all received values
+    pub fn values<'a>(&'a self) -> impl Iterator<Item = &'a T> + 'a {
+        self.responses.iter().map(|r| &r.value)
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.responses.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.responses.is_empty()
+    }
+}
+
+#[derive(Debug)]
+pub struct PeerResponseItem<T: fmt::Debug> {
+    pub peer: SocketAddr,
+    pub peer_id: Option<IdBytes>,
+    pub value: T,
 }
 
 /// Result of a [`HyperDht::lookup`] query.
@@ -523,6 +815,20 @@ enum QueryStreamType {
     LookUp(QueryStreamInner),
     Announce(QueryStreamInner),
     UnAnnounce(QueryStreamInner),
+    PutImmutable {
+        query_id: QueryId,
+        key: IdBytes,
+    },
+    PutMutable {
+        query_id: QueryId,
+        /// How to verify the proof
+        opts: PutOpts,
+    },
+    GetImmutable(GetResult<Vec<u8>>),
+    GetMutable {
+        get: GetResult<Mutable>,
+        value: Mutable,
+    },
 }
 
 impl QueryStreamType {
@@ -531,6 +837,31 @@ impl QueryStreamType {
             QueryStreamType::LookUp(inner)
             | QueryStreamType::Announce(inner)
             | QueryStreamType::UnAnnounce(inner) => inner.inject_response(resp),
+            QueryStreamType::GetImmutable(get) => {
+                if let Some(value) = resp.value {
+                    if get.key == crypto::hash_id(&value) {
+                        get.responses.push(PeerResponseItem {
+                            peer: resp.peer,
+                            peer_id: resp.peer_id,
+                            value,
+                        })
+                    }
+                }
+            }
+            QueryStreamType::GetMutable { get, value } => {
+                if let Some(result) = resp.decode_value::<Mutable>() {
+                    if result.seq.unwrap_or_default() >= value.seq.unwrap_or_default()
+                        && store::verify(&get.key, &result).is_ok()
+                    {
+                        get.responses.push(PeerResponseItem {
+                            peer: resp.peer,
+                            peer_id: resp.peer_id,
+                            value: result,
+                        })
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -553,6 +884,14 @@ impl QueryStreamType {
                 topic: inner.topic,
                 query_id,
             },
+            QueryStreamType::PutImmutable { query_id, key } => {
+                HyperDhtEvent::PutImmutableResult { query_id, key }
+            }
+            QueryStreamType::GetImmutable(get) => HyperDhtEvent::GetImmutableResult(get),
+            QueryStreamType::GetMutable { get, .. } => HyperDhtEvent::GetMutableResult(get),
+            QueryStreamType::PutMutable { query_id, opts } => {
+                HyperDhtEvent::PutMutableResult { query_id, opts }
+            }
         }
     }
 }
@@ -665,16 +1004,16 @@ mod tests {
             if let Some(event) = node.next().await {
                 match event {
                     HyperDhtEvent::Bootstrapped { .. } => {
-                        // announce topic and port
+                        // 1. announce topic and port
                         node.announce(opts.clone());
                     }
                     HyperDhtEvent::AnnounceResult { .. } => {
-                        // look up the announced topic
+                        // 2. look up the announced topic
                         node.lookup(opts.topic.clone());
                     }
                     HyperDhtEvent::LookupResult { lookup, .. } => {
                         if unannounced {
-                            // after un announcing lookup yields zero peers
+                            // 5. after un announcing lookup yields zero peers
                             assert!(lookup.is_empty());
                             return Ok(());
                         }
@@ -688,14 +1027,15 @@ mod tests {
                             addr.set_port(port as u16);
                             assert_eq!(remotes[0], SocketAddr::V4(addr));
                         }
-                        // unannounce the port
+                        // 3. un announce the port
                         node.unannounce(opts.clone());
                     }
                     HyperDhtEvent::UnAnnounceResult { .. } => {
+                        /// 4. another lookup that now comes up empty
                         unannounced = true;
                         node.lookup(opts.topic.clone());
                     }
-                    HyperDhtEvent::CustomCommandQuery { .. } => {}
+                    _ => {}
                 }
             }
         }

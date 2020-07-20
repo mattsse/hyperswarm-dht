@@ -11,7 +11,7 @@ use crate::rpc::{fill_random_bytes, IdBytes};
 
 /// VALUE_MAX_SIZE + packet overhead (i.e. the key etc.)
 /// should be less than the network MTU, normally 1400 bytes
-pub const VALUE_MAX_SIZE: u64 = 1000;
+pub const VALUE_MAX_SIZE: usize = 1000;
 
 const SALT_SEG: &[u8; 6] = b"4:salt";
 

@@ -179,9 +179,14 @@ impl Message {
 
     /// Decode the messages value into [`Holepunch`]
     pub fn decode_holepunch(&self) -> Option<Holepunch> {
+        self.decode_value()
+    }
+
+    /// Decodes an instance of the message from the message's value.
+    pub fn decode_value<T: prost::Message + Default>(&self) -> Option<T> {
         self.value
             .as_ref()
-            .and_then(|val| Holepunch::decode(val.as_slice()).ok())
+            .and_then(|val| T::decode(val.as_slice()).ok())
     }
 
     pub fn set_holepunch(&mut self, holepunch: &Holepunch) {

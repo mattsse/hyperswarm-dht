@@ -4,6 +4,7 @@ use ed25519_dalek::PublicKey;
 use lru::LruCache;
 use prost::Message;
 
+use crate::crypto::VALUE_MAX_SIZE;
 use crate::dht_proto::Mutable;
 use crate::rpc::message::Type;
 use crate::rpc::query::{CommandQuery, CommandQueryResponse};
@@ -11,13 +12,17 @@ use crate::rpc::IdBytes;
 use crate::{crypto, ERR_INVALID_INPUT};
 use crate::{IMMUTABLE_STORE_CMD, MUTABLE_STORE_CMD};
 
-enum StorageEntry {
+/// PUT_VALUE_MAX_SIZE (1000B) + packet overhead (i.e. the key etc.) should be less than the network MTU, normally 1400 bytes
+pub const PUT_VALUE_MAX_SIZE: usize = VALUE_MAX_SIZE;
+
+#[derive(Debug, Clone)]
+pub enum StorageEntry {
     Mutable(Mutable),
     Immutable(Vec<u8>),
 }
 
 impl StorageEntry {
-    fn as_mutable(&self) -> Option<&Mutable> {
+    pub fn as_mutable(&self) -> Option<&Mutable> {
         if let StorageEntry::Mutable(m) = self {
             Some(m)
         } else {
@@ -25,7 +30,23 @@ impl StorageEntry {
         }
     }
 
-    fn as_immutable(&self) -> Option<&Vec<u8>> {
+    pub fn as_immutable(&self) -> Option<&Vec<u8>> {
+        if let StorageEntry::Immutable(i) = self {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_mutable(self) -> Option<Mutable> {
+        if let StorageEntry::Mutable(m) = self {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_immutable(self) -> Option<Vec<u8>> {
         if let StorageEntry::Immutable(i) = self {
             Some(i)
         } else {
@@ -55,7 +76,7 @@ impl Store {
         }
     }
 
-    /// Handle an incoming requests for the registered commands and reply.
+    /// Callback for immutable command.
     pub fn on_command(&mut self, query: CommandQuery) -> CommandQueryResponse {
         assert_eq!(query.command.as_str(), IMMUTABLE_STORE_CMD);
         if query.ty == Type::Update {
@@ -65,6 +86,7 @@ impl Store {
         }
     }
 
+    /// Callback for mutable command
     pub fn on_command_mut(&mut self, mut query: CommandQuery) -> CommandQueryResponse {
         assert_eq!(query.command.as_str(), MUTABLE_STORE_CMD);
         if let Some(mutable) = query
@@ -81,12 +103,20 @@ impl Store {
         query.into_response_with_error(ERR_INVALID_INPUT)
     }
 
-    pub fn get(&mut self) {
-        unimplemented!()
+    pub fn get(&mut self, key: &StorageKey) -> Option<&StorageEntry> {
+        self.inner.get(key)
     }
 
-    pub fn put(&mut self) {
-        unimplemented!()
+    pub fn put_immutable(&mut self, key: IdBytes, value: Vec<u8>) -> Option<Vec<u8>> {
+        self.inner
+            .put(StorageKey::Immutable(key), StorageEntry::Immutable(value))
+            .and_then(StorageEntry::into_immutable)
+    }
+
+    pub fn put_mutable(&mut self, key: Vec<u8>, value: Mutable) -> Option<Mutable> {
+        self.inner
+            .put(StorageKey::Mutable(key), StorageEntry::Mutable(value))
+            .and_then(StorageEntry::into_mutable)
     }
 
     fn get_mut_key(mutable: &Mutable, id: &IdBytes) -> StorageKey {
@@ -97,7 +127,7 @@ impl Store {
         }
     }
 
-    fn query_mut(&mut self, mut query: CommandQuery, mutable: Mutable) -> CommandQueryResponse {
+    pub fn query_mut(&mut self, mut query: CommandQuery, mutable: Mutable) -> CommandQueryResponse {
         let key = Self::get_mut_key(&mutable, &query.target);
         if let Some(val) = self.inner.get(&key).and_then(StorageEntry::as_mutable) {
             if val.seq.unwrap_or_default() >= mutable.seq.unwrap_or_default() {
@@ -109,7 +139,7 @@ impl Store {
         query.into()
     }
 
-    fn update_mut(&mut self, query: CommandQuery, mutable: Mutable) -> CommandQueryResponse {
+    pub fn update_mut(&mut self, query: CommandQuery, mutable: Mutable) -> CommandQueryResponse {
         if mutable.value.is_none() || mutable.signature.is_none() {
             return query.into();
         }
@@ -135,7 +165,7 @@ impl Store {
     }
 
     /// Callback for a [`IMMUTABLE_STORE_CMD`] request of type [`Type::Query`].
-    fn query(&mut self, mut query: CommandQuery) -> CommandQueryResponse {
+    pub fn query(&mut self, mut query: CommandQuery) -> CommandQueryResponse {
         let val = self
             .inner
             .get(&StorageKey::Immutable(query.target.clone()))
@@ -146,7 +176,7 @@ impl Store {
     }
 
     /// Callback for a [`IMMUTABLE_STORE_CMD`] request of type [`Type::Update`].
-    fn update(&mut self, mut query: CommandQuery) -> CommandQueryResponse {
+    pub fn update(&mut self, mut query: CommandQuery) -> CommandQueryResponse {
         if let Some(value) = query.value.take() {
             let key = crypto::hash_id(value.as_slice());
             if key != query.target {
@@ -160,7 +190,7 @@ impl Store {
 }
 
 #[inline]
-fn verify(pk: &IdBytes, mutable: &Mutable) -> Result<(), String> {
+pub fn verify(pk: &IdBytes, mutable: &Mutable) -> Result<(), String> {
     let public_key =
         PublicKey::from_bytes(pk.as_ref()).map_err(|_| ERR_INVALID_INPUT.to_string())?;
     let sig = crypto::signature(&mutable).ok_or_else(|| ERR_INVALID_INPUT.to_string())?;
@@ -170,7 +200,7 @@ fn verify(pk: &IdBytes, mutable: &Mutable) -> Result<(), String> {
 }
 
 #[inline]
-fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
+pub fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
     let seq_a = a.seq.unwrap_or_default();
     let seq_b = b.seq.unwrap_or_default();
     if a.value.is_some() && seq_a == seq_b && a.value != b.value {
@@ -181,14 +211,4 @@ fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
     } else {
         Ok(())
     }
-}
-
-#[derive(Debug)]
-pub struct ValueStream {}
-
-pub struct Value {
-    pub value: Vec<u8>,
-    pub salt: Option<Vec<u8>>,
-    pub signature: Vec<u8>,
-    pub seq: u64,
 }

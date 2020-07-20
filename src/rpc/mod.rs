@@ -328,6 +328,10 @@ impl RpcDht {
         self.id.preimage()
     }
 
+    pub(crate) fn queries_mut(&mut self) -> &mut QueryPool {
+        &mut self.queries
+    }
+
     /// Ping a remote
     pub fn ping(&mut self, peer: &PeerId) {
         self.io.query(
@@ -1013,6 +1017,15 @@ pub struct Response {
     pub peer_id: Option<IdBytes>,
     /// response payload
     pub value: Option<Vec<u8>>,
+}
+
+impl Response {
+    /// Decodes an instance of the message from the response's value.
+    pub fn decode_value<T: prost::Message + Default>(&self) -> Option<T> {
+        self.value
+            .as_ref()
+            .and_then(|val| T::decode(val.as_slice()).ok())
+    }
 }
 
 /// Unique identifier for a request. Must be passed back in order to answer a request from
