@@ -19,7 +19,7 @@ use crate::dht_proto::{encode_input, PeersInput, PeersOutput};
 use crate::lru::{CacheKey, PeerCache};
 use crate::peers::{decode_local_peers, decode_peers, PeersEncoding};
 use crate::rpc::message::{Message, Type};
-use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId};
+use crate::rpc::query::{CommandQuery, CommandQueryResponse, QueryId, QueryStats};
 use crate::rpc::{RequestOk, Response, ResponseOk, RpcDht, RpcDhtEvent};
 use crate::store::Store;
 
@@ -137,10 +137,9 @@ impl HyperDht {
                     .port
                     .and_then(|port| u16::try_from(port).ok())
                     .unwrap_or_else(|| query.peer.addr.port());
+
                 if let IpAddr::V4(host) = query.peer.addr.ip() {
                     let from = SocketAddr::V4(SocketAddrV4::new(host, port));
-
-                    let _remote_record = from.encode();
 
                     let remote_cache = CacheKey::Remote(query.target.clone());
 
@@ -204,7 +203,6 @@ impl HyperDht {
                         // fits safe in vec
                         output.encode(&mut buf).unwrap();
                         query.value = Some(buf);
-
                         self.inner.reply_command(query);
                         return;
                     }
@@ -327,12 +325,15 @@ impl Stream for HyperDht {
                     RpcDhtEvent::ResponseResult(Ok(ResponseOk::Response(resp))) => {
                         pin.inject_response(resp)
                     }
+                    RpcDhtEvent::Bootstrapped { stats } => {
+                        return Poll::Ready(Some(HyperDhtEvent::Bootstrapped { stats }))
+                    }
                     RpcDhtEvent::QueryResult {
                         id,
                         cmd: _,
                         stats: _,
                     } => pin.query_finished(id),
-                    _ => {}
+                    ev => log::debug!("received other event {:?}", ev),
                 }
             }
 
@@ -425,7 +426,6 @@ impl TryFrom<&[u8]> for QueryOpts {
     }
 }
 
-// TODO add actual types
 #[derive(Debug)]
 pub enum HyperDhtEvent {
     /// The result of [`HyperDht::announce`].
@@ -434,17 +434,18 @@ pub enum HyperDhtEvent {
         topic: IdBytes,
         query_id: QueryId,
     },
+    /// The result of [`HyperDht::lookup`].
+    LookupResult { lookup: Lookup, query_id: QueryId },
     /// The result of [`HyperDht::unannounce`].
     UnAnnounceResult {
         peers: Vec<Peers>,
         topic: IdBytes,
         query_id: QueryId,
     },
-    /// The result of [`HyperDht::lookup`].
-    LookupResult {
-        peers: Vec<Peers>,
-        topic: IdBytes,
-        query_id: QueryId,
+    /// The dht is now bootstrapped
+    Bootstrapped {
+        /// Execution statistics from the bootstrap query.
+        stats: QueryStats,
     },
     /// Received a query with a custom command that is not automatically handled by the DHT
     CustomCommandQuery {
@@ -457,26 +458,58 @@ pub enum HyperDhtEvent {
     },
 }
 
-// pub struct LookupOk {
-//     /// The DHT node that is returning this data
-//     node: PeerId,
-//     to: Option<SocketAddr>,
-//     /// List of peers
-//     peers: Vec<SocketAddr>,
-//     /// List of LAN peers
-//     local_peers: Vec<SocketAddr>,
-// }
+/// Result of a [`HyperDht::lookup`] query.
+#[derive(Debug, Clone)]
+pub struct Lookup {
+    /// The hash to lookup
+    pub topic: IdBytes,
+    /// The gathered responses
+    pub peers: Vec<Peers>,
+}
+
+impl Lookup {
+    /// Returns an iterator over all the nodes that sent data for this look
+    pub fn origins<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = (&'a SocketAddr, Option<&'a IdBytes>)> + 'a {
+        self.peers
+            .iter()
+            .map(|peer| (&peer.node, peer.peer_id.as_ref()))
+    }
+
+    /// Returns an iterator over all remote peers that announced the topic hash
+    pub fn remotes<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+        self.peers.iter().flat_map(|peer| peer.peers.iter())
+    }
+
+    /// Returns an iterator over all LAN peers that announced the topic hash
+    pub fn locals<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+        self.peers.iter().flat_map(|peer| peer.local_peers.iter())
+    }
+
+    /// Returns an iterator over all peers (remote and LAN) that announced the topic hash.
+    pub fn all_peers<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+        self.peers
+            .iter()
+            .flat_map(|peer| peer.peers.iter().chain(peer.local_peers.iter()))
+    }
+}
 
 /// A Response to a query request from a peer
 #[derive(Debug, Clone)]
 pub struct Peers {
-    pub node: PeerId,
-    pub to: Option<SocketAddr>,
+    /// The DHT node that is returning this data
+    pub node: SocketAddr,
+    /// The id of the `peer` if available
+    pub peer_id: Option<IdBytes>,
+    /// List of peers that announced the topic hash
     pub peers: Vec<SocketAddr>,
+    /// List of LAN peers that announced the topic hash
     pub local_peers: Vec<SocketAddr>,
 }
 
 /// Type to keep track of the responses for queries in progress.
+#[derive(Debug)]
 enum QueryStreamType {
     LookUp(QueryStreamInner),
     Announce(QueryStreamInner),
@@ -495,8 +528,10 @@ impl QueryStreamType {
     fn finalize(self, query_id: QueryId) -> HyperDhtEvent {
         match self {
             QueryStreamType::LookUp(inner) => HyperDhtEvent::LookupResult {
-                peers: inner.responses,
-                topic: inner.topic,
+                lookup: Lookup {
+                    peers: inner.responses,
+                    topic: inner.topic,
+                },
                 query_id,
             },
             QueryStreamType::Announce(inner) => HyperDhtEvent::AnnounceResult {
@@ -513,6 +548,7 @@ impl QueryStreamType {
     }
 }
 
+#[derive(Debug)]
 struct QueryStreamInner {
     topic: IdBytes,
     responses: Vec<Peers>,
@@ -528,6 +564,7 @@ impl QueryStreamInner {
         }
     }
 
+    /// Store the decoded peers from the `Response` value
     fn inject_response(&mut self, resp: Response) {
         if let Some(val) = resp
             .value
@@ -548,9 +585,12 @@ impl QueryStreamInner {
                 })
                 .unwrap_or_default();
 
+            if peers.is_empty() && local_peers.is_empty() {
+                return;
+            }
             self.responses.push(Peers {
                 node: resp.peer,
-                to: resp.to,
+                peer_id: resp.peer_id,
                 peers,
                 local_peers,
             })

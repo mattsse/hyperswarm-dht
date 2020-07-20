@@ -9,14 +9,13 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::time::Duration;
 
+use async_std::net::UdpSocket;
 use ed25519_dalek::{PublicKey, PUBLIC_KEY_LENGTH};
 use futures::{
     stream::Stream,
     task::{Context, Poll},
 };
-use log::debug;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
-use async_std::net::UdpSocket;
 use wasm_timer::Instant;
 
 use crate::rpc::query::CommandQueryResponse;
@@ -272,22 +271,34 @@ impl RpcDht {
             bootstrap_nodes: config.bootstrap_nodes.unwrap_or_default(),
             bootstrapped: false,
         };
+
         dht.bootstrap();
         Ok(dht)
     }
 
+    /// Whether this a ephemeral node.
+    ///
+    /// Ephemeral nodes are short-lived and not added to the routing table.
     #[inline]
     pub fn is_ephemeral(&self) -> bool {
         self.io.is_ephemeral()
     }
 
+    #[inline]
     pub fn bootstrap(&mut self) {
         if !self.bootstrap_nodes.is_empty() {
             self.query(Command::FindNode, self.id.clone(), None);
+        } else {
+            if !self.bootstrapped {
+                self.queued_events.push_back(RpcDhtEvent::Bootstrapped {
+                    stats: QueryStats::empty(),
+                });
+                self.bootstrapped = true;
+            }
         }
-        self.bootstrapped = true;
     }
 
+    /// The registered custom commands this node supports.
     #[inline]
     pub fn commands(&self) -> &HashSet<String> {
         &self.commands
@@ -298,14 +309,24 @@ impl RpcDht {
         &mut self.commands
     }
 
+    /// Add an additional command to the supported command list.
+    ///
+    /// Messages related to additional commands will be available as a [`CustomCommandRequest`] event.
     #[inline]
     pub fn register_command(&mut self, cmd: impl ToString) -> bool {
         self.commands.insert(cmd.to_string())
     }
 
+    /// Returns the local address that this listener is bound to.
     #[inline]
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.io.local_addr()
+    }
+
+    /// Returns the id used to identify this node.
+    #[inline]
+    pub fn local_id(&self) -> &IdBytes {
+        self.id.preimage()
     }
 
     /// Ping a remote
@@ -440,7 +461,7 @@ impl RpcDht {
                         });
                     }
                     kbucket::InsertResult::Full => {
-                        debug!("Bucket full. Peer not added to routing table: {:?}", peer)
+                        log::debug!("Bucket full. Peer not added to routing table: {:?}", peer)
                     }
                     kbucket::InsertResult::Pending { disconnected: _ } => {
 
@@ -654,7 +675,7 @@ impl RpcDht {
     }
 
     fn reply(&mut self, mut msg: Message, peer: Peer, key: IdBytes) {
-        let _closer_nodes = self.closer_nodes(key, usize::from(K_VALUE));
+        msg.closer_nodes = Some(self.closer_nodes(key, usize::from(K_VALUE)));
         if msg.error.is_some() {
             let _ = msg.value.take();
         }
@@ -741,6 +762,8 @@ impl RpcDht {
 
     /// Handles a finished query.
     fn query_finished(&mut self, query: QueryStream) -> Option<RpcDhtEvent> {
+        let is_find_node = query.command().is_find_node();
+
         let result = query.into_result();
 
         // add nodes to the table
@@ -756,6 +779,16 @@ impl RpcDht {
                     self.add_node(peer.id, Peer::from(peer.addr), Some(roundtrip_token), to);
                 }
                 _ => {}
+            }
+        }
+
+        // first `find_node` query is issued as bootstrap
+        if is_find_node {
+            if !self.bootstrapped {
+                self.bootstrapped = true;
+                return Some(RpcDhtEvent::Bootstrapped {
+                    stats: result.stats,
+                });
             }
         }
 
@@ -799,32 +832,27 @@ impl Stream for RpcDht {
             // Look for a sent/received message
             loop {
                 if let Poll::Ready(Some(event)) = Stream::poll_next(Pin::new(&mut pin.io), cx) {
-                    log::debug!("new io event: {:?}", event);
                     pin.inject_event(event);
+                    if let Some(event) = pin.queued_events.pop_front() {
+                        return Poll::Ready(Some(event));
+                    }
                 } else {
-                    log::debug!("poll queries {}", pin.queries.len());
                     match pin.queries.poll(now) {
                         QueryPoolState::Waiting(Some((query, event))) => {
-                            log::debug!("QueryPoolState::Waiting {:?}", event);
                             let id = query.id();
                             pin.inject_query_event(id, event);
                         }
                         QueryPoolState::Finished(q) => {
-                            log::debug!("QueryPoolState::Finished");
                             if let Some(event) = pin.query_finished(q) {
-                                log::debug!("query_finished --> return");
                                 return Poll::Ready(Some(event));
                             }
                         }
                         QueryPoolState::Timeout(q) => {
-                            log::debug!("QueryPoolState::Timeout");
                             if let Some(event) = pin.query_timeout(q) {
-                                log::debug!("query_timeout --> return");
                                 return Poll::Ready(Some(event));
                             }
                         }
                         QueryPoolState::Waiting(None) | QueryPoolState::Idle => {
-                            log::debug!("waiting queries");
                             break;
                         }
                     }
@@ -981,7 +1009,9 @@ pub struct Response {
     /// `to` field of the message
     pub to: Option<SocketAddr>,
     /// Peer that issued this reponse
-    pub peer: PeerId,
+    pub peer: SocketAddr,
+    /// Included identifier of the peer.
+    pub peer_id: Option<IdBytes>,
     /// response payload
     pub value: Option<Vec<u8>>,
 }
@@ -993,7 +1023,9 @@ pub struct RequestId(pub(crate) u64);
 
 #[derive(Debug)]
 pub enum RpcDhtEvent {
+    /// Result for an incoming request
     RequestResult(RequestResult),
+    /// Result for an incoming response
     ResponseResult(ResponseResult),
     /// The routing table has been updated.
     RoutingUpdated {
@@ -1002,6 +1034,10 @@ pub enum RpcDhtEvent {
         /// The ID of the peer that was evicted from the routing table to make
         /// room for the new peer, if any.
         old_peer: Option<PeerId>,
+    },
+    Bootstrapped {
+        /// Execution statistics from the bootstrap query.
+        stats: QueryStats,
     },
     /// A completed query.
     ///

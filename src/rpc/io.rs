@@ -6,6 +6,7 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::time::Duration;
 
+use async_std::{net::UdpSocket, stream::Stream};
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
 use blake2::{Blake2b, Digest};
 use fnv::FnvHashMap;
@@ -14,9 +15,9 @@ use futures::{
     Sink,
 };
 use prost::Message as ProtoMessage;
-use async_std::{net::UdpSocket, stream::Stream};
 use wasm_timer::Instant;
 
+use crate::rpc::udp::UdpFramed;
 use crate::rpc::IdBytes;
 use crate::{
     kbucket::Key,
@@ -29,7 +30,6 @@ use crate::{
         Peer, RequestId,
     },
 };
-use crate::rpc::udp::UdpFramed;
 
 pub const VERSION: u64 = 1;
 
@@ -183,6 +183,8 @@ where
         rid
     }
 
+    /// Returns the local address that this listener is bound to.
+    #[inline]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.get_ref().local_addr()
     }
@@ -399,7 +401,7 @@ where
                 Type::Query => Some(IoHandlerEvent::InRequest {
                     peer,
                     msg,
-                    ty: Type::Update,
+                    ty: Type::Query,
                 }),
                 Type::Update => {
                     if let Some(ref rt) = msg.roundtrip_token {
