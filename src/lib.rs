@@ -77,6 +77,7 @@ pub struct HyperDht {
 }
 
 impl HyperDht {
+    /// Create a new DHT based on the configuration
     pub async fn with_config(mut config: DhtConfig) -> io::Result<Self> {
         config = config.register_commands(&[MUTABLE_STORE_CMD, IMMUTABLE_STORE_CMD, PEERS_CMD]);
 
@@ -129,7 +130,7 @@ impl HyperDht {
         }
     }
 
-    /// Fetch an mutable value from the DHT.
+    /// Fetch a mutable value from the DHT.
     ///
     /// if the querying node already has the immutable value then there's no need to query the dht. In that case [`Either::Right`] is returned containing the key and the corresponding immutable value.
     pub fn get_immutable(
@@ -160,7 +161,7 @@ impl HyperDht {
         Either::Left(query_id)
     }
 
-    /// Fetch an mutable value from the DHT.
+    /// Fetch a mutable value from the DHT.
     pub fn get_mutable(&mut self, get: impl Into<GetOpts>) -> Result<QueryId, ()> {
         let get = get.into();
         if get.salt.as_ref().map(|s| s.len() > 64).unwrap_or_default() {
@@ -215,7 +216,7 @@ impl HyperDht {
         Ok(query_id)
     }
 
-    /// Store an mutable value in the DHT.
+    /// Store a mutable value in the DHT.
     pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> Result<QueryId, ()> {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
@@ -912,7 +913,7 @@ impl QueryStreamInner {
     fn new(topic: IdBytes, local_address: Option<SocketAddr>) -> Self {
         Self {
             topic,
-            responses: vec![],
+            responses: Vec::new(),
             local_address,
         }
     }
@@ -958,20 +959,100 @@ mod tests {
 
     use super::*;
 
+    macro_rules! spawn_dhts {
+        ($num:expr, $bs:expr) => {
+            spawn_dhts!($num, $bs, false)
+        };
+        ($num:expr, $bs:expr, $eph:expr) => {{
+            for _ in 0usize..$num {
+                let mut dht = HyperDht::with_config(
+                    DhtConfig::default()
+                        .set_bootstrap_nodes($bs)
+                        .set_ephemeral($eph),
+                )
+                .await?;
+                // wait until this dht is bootstrapped
+                match dht.next().await {
+                    Some(HyperDhtEvent::Bootstrapped { .. }) => {}
+                    _ => panic!("expected bootstrap result first"),
+                }
+                async_std::task::spawn(async move {
+                    loop {
+                        // process each incoming message
+                        dht.next().await;
+                    }
+                });
+            }
+        }};
+    }
+
+    macro_rules! bootstrap_dht {
+        () => {
+            bootstrap_dht!(true)
+        };
+        ($eph:expr) => {{
+            let mut bs = HyperDht::with_config(
+                DhtConfig::default()
+                    .empty_bootstrap_nodes()
+                    .set_ephemeral($eph),
+            )
+            .await?;
+            let addr = bs.local_addr()?;
+            async_std::task::spawn(async move {
+                loop {
+                    // process each incoming message
+                    bs.next().await;
+                }
+            });
+            addr
+        }};
+    }
+
+    #[async_std::test]
+    async fn immutable_put_get() -> Result<(), Box<dyn std::error::Error>> {
+        // create an ephemeral bootstrap node
+        let bs_addr = bootstrap_dht!();
+        // spawn some nodes bootstrapped with `bs`
+        let num_spawned = 10;
+        spawn_dhts!(num_spawned, &[bs_addr]);
+
+        let payload = b"hello friend!";
+
+        let mut a =
+            HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
+        a.next().await;
+        a.put_immutable(payload);
+        let key = match a.next().await {
+            Some(HyperDhtEvent::PutImmutableResult { key, .. }) => {
+                assert_eq!(key, crypto::hash_id(payload));
+                key
+            }
+            _ => panic!("expected result for the immutable value"),
+        };
+        async_std::task::spawn(async move {
+            loop {
+                a.next().await;
+            }
+        });
+
+        let mut b =
+            HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
+        b.get_immutable(key.clone());
+        loop {
+            if let Some(HyperDhtEvent::GetImmutableResult(get)) = b.next().await {
+                assert_eq!(get.key, key);
+                // expected answers from every non ephemeral node `num_spawned` + `a`
+                assert_eq!(get.len(), num_spawned + 1);
+                assert!(get.values().all(|val| val == payload));
+                return Ok(());
+            }
+        }
+    }
+
     #[async_std::test]
     async fn local_bootstrap() -> Result<(), Box<dyn std::error::Error>> {
         // ephemeral node used for bootstrapping
-        let mut bs =
-            HyperDht::with_config(DhtConfig::default().empty_bootstrap_nodes().ephemeral()).await?;
-
-        let bs_addr = bs.local_addr()?;
-
-        async_std::task::spawn(async move {
-            loop {
-                // process each incoming message
-                bs.next().await;
-            }
-        });
+        let bs_addr = bootstrap_dht!();
 
         // represents stateful nodes in the DHT
         let mut state =
@@ -984,7 +1065,7 @@ mod tests {
                 // after initial bootstrapping the state`s address is included in the bs` routing table. Then the `node` can start to announce
                 tx.send(()).expect("Failed to send");
             } else {
-                panic!("only expected boostrap result")
+                panic!("expected bootstrap result first")
             }
             loop {
                 state.next().await;
@@ -1002,7 +1083,8 @@ mod tests {
         )
         .await?;
 
-        rx.await;
+        // wait until `state` is bootstrapped
+        rx.await?;
 
         let mut unannounced = false;
         loop {
