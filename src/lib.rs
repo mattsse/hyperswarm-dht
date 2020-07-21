@@ -138,6 +138,7 @@ impl HyperDht {
         key: impl Into<IdBytes>,
     ) -> Either<QueryId, (IdBytes, Vec<u8>)> {
         let key = key.into();
+
         if let Some(value) = self
             .store
             .get(&StorageKey::Immutable(key.clone()))
@@ -227,9 +228,13 @@ impl HyperDht {
         let mut buf = Vec::with_capacity(value.encoded_len());
         value.encode(&mut buf).unwrap();
 
-        let query_id =
-            self.inner
-                .update(MUTABLE_STORE_CMD, kbucket::Key::new(opts.id()), Some(buf));
+        let key = opts.id();
+        self.store
+            .put_mutable(Store::get_mut_key(&value, &key), value);
+        let query_id = self
+            .inner
+            .update(MUTABLE_STORE_CMD, kbucket::Key::new(key), Some(buf));
+
         self.queries.insert(
             query_id,
             QueryStreamType::PutMutable {
@@ -407,7 +412,41 @@ impl HyperDht {
 
     fn inject_response(&mut self, resp: Response) {
         if let Some(query) = self.queries.get_mut(&resp.query) {
-            query.inject_response(resp)
+            match query {
+                QueryStreamType::LookUp(inner)
+                | QueryStreamType::Announce(inner)
+                | QueryStreamType::UnAnnounce(inner) => inner.inject_response(resp),
+                QueryStreamType::GetImmutable(get) => {
+                    if let Some(value) = resp.value {
+                        let key = crypto::hash_id(&value);
+                        if get.key == key {
+                            self.store.put_immutable(key, value.clone());
+                            get.responses.push(PeerResponseItem {
+                                peer: resp.peer,
+                                peer_id: resp.peer_id,
+                                value,
+                            })
+                        }
+                    }
+                }
+                QueryStreamType::GetMutable { get, value } => {
+                    if let Some(result) = resp.decode_value::<Mutable>() {
+                        if result.seq.unwrap_or_default() >= value.seq.unwrap_or_default()
+                            && store::verify(&get.key, &result).is_ok()
+                        {
+                            self.store
+                                .put_mutable(Store::get_mut_key(&result, &get.key), result.clone());
+
+                            get.responses.push(PeerResponseItem {
+                                peer: resp.peer,
+                                peer_id: resp.peer_id,
+                                value: result,
+                            })
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -447,7 +486,7 @@ impl Stream for HyperDht {
                         cmd: _,
                         stats: _,
                     } => pin.query_finished(id),
-                    ev => log::debug!("received other event {:?}", ev),
+                    _ => {}
                 }
             }
 
@@ -482,7 +521,7 @@ impl PutOpts {
     fn mutable(&self, value: Vec<u8>) -> Mutable {
         use ed25519_dalek::ed25519::signature::Signature;
         let signature = match &self.key {
-            PutKey::KeyPair(kp) => crypto::sign(&kp.public, &kp.secret, &value)
+            PutKey::KeyPair(kp) => crypto::sign(&kp.public, &kp.secret, &value, self.seq)
                 .as_bytes()
                 .to_vec(),
             PutKey::Signature((_, sig)) => sig.as_bytes().to_vec(),
@@ -537,7 +576,7 @@ pub enum PutKey {
     Signature((PublicKey, Signature)),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GetOpts {
     /// The public key
     pub key: IdBytes,
@@ -838,39 +877,6 @@ enum QueryStreamType {
 }
 
 impl QueryStreamType {
-    fn inject_response(&mut self, resp: Response) {
-        match self {
-            QueryStreamType::LookUp(inner)
-            | QueryStreamType::Announce(inner)
-            | QueryStreamType::UnAnnounce(inner) => inner.inject_response(resp),
-            QueryStreamType::GetImmutable(get) => {
-                if let Some(value) = resp.value {
-                    if get.key == crypto::hash_id(&value) {
-                        get.responses.push(PeerResponseItem {
-                            peer: resp.peer,
-                            peer_id: resp.peer_id,
-                            value,
-                        })
-                    }
-                }
-            }
-            QueryStreamType::GetMutable { get, value } => {
-                if let Some(result) = resp.decode_value::<Mutable>() {
-                    if result.seq.unwrap_or_default() >= value.seq.unwrap_or_default()
-                        && store::verify(&get.key, &result).is_ok()
-                    {
-                        get.responses.push(PeerResponseItem {
-                            peer: resp.peer,
-                            peer_id: resp.peer_id,
-                            value: result,
-                        })
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn finalize(self, query_id: QueryId) -> HyperDhtEvent {
         match self {
             QueryStreamType::LookUp(inner) => HyperDhtEvent::LookupResult {

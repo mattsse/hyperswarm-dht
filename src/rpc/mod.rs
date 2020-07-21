@@ -203,6 +203,11 @@ impl DhtConfig {
         self
     }
 
+    pub fn set_ephemeral(mut self, ephemeral: bool) -> Self {
+        self.ephemeral = ephemeral;
+        self
+    }
+
     pub fn adaptive(mut self) -> Self {
         self.adaptive = true;
         self

@@ -119,16 +119,16 @@ impl Store {
             .and_then(StorageEntry::into_mutable)
     }
 
-    fn get_mut_key(mutable: &Mutable, id: &IdBytes) -> StorageKey {
+    pub fn get_mut_key(mutable: &Mutable, id: &IdBytes) -> Vec<u8> {
         if let Some(ref salt) = mutable.salt {
-            StorageKey::Mutable(id.as_ref().iter().chain(salt.iter()).cloned().collect())
+            id.as_ref().iter().chain(salt.iter()).cloned().collect()
         } else {
-            StorageKey::Mutable(id.to_vec())
+            id.to_vec()
         }
     }
 
     pub fn query_mut(&mut self, mut query: CommandQuery, mutable: Mutable) -> CommandQueryResponse {
-        let key = Self::get_mut_key(&mutable, &query.target);
+        let key = StorageKey::Mutable(Self::get_mut_key(&mutable, &query.target));
         if let Some(val) = self.inner.get(&key).and_then(StorageEntry::as_mutable) {
             if val.seq.unwrap_or_default() >= mutable.seq.unwrap_or_default() {
                 let mut buf = Vec::with_capacity(val.encoded_len());
@@ -144,8 +144,7 @@ impl Store {
             return query.into();
         }
 
-        let key = Self::get_mut_key(&mutable, &query.target);
-
+        let key = StorageKey::Mutable(Self::get_mut_key(&mutable, &query.target));
         if let Err(err) = verify(&query.target, &mutable) {
             return query.into_response_with_error(err);
         }
@@ -194,8 +193,7 @@ pub fn verify(pk: &IdBytes, mutable: &Mutable) -> Result<(), String> {
     let public_key =
         PublicKey::from_bytes(pk.as_ref()).map_err(|_| ERR_INVALID_INPUT.to_string())?;
     let sig = crypto::signature(&mutable).ok_or_else(|| ERR_INVALID_INPUT.to_string())?;
-    let msg = crypto::signable(&mutable).map_err(|_| ERR_INVALID_INPUT.to_string())?;
-
+    let msg = crypto::signable_mutable(&mutable).map_err(|_| ERR_INVALID_INPUT.to_string())?;
     crypto::verify(&public_key, &msg, &sig).map_err(|_| ERR_INVALID_INPUT.to_string())
 }
 
@@ -210,5 +208,29 @@ pub fn maybe_seq_error(a: &Mutable, b: &Mutable) -> Result<(), String> {
         Err("ERR_SEQ_MUST_EXCEED_CURRENT".to_string())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_test() {
+        use ed25519_dalek::ed25519::signature::Signature;
+        let value = b"hello friend";
+        let keypair = crypto::keypair();
+        let signature = crypto::sign(&keypair.public, &keypair.secret, value.as_ref(), 0)
+            .as_bytes()
+            .to_vec();
+
+        let m = Mutable {
+            value: Some(value.to_vec()),
+            signature: Some(signature),
+            seq: Some(0),
+            salt: None,
+        };
+        let id = keypair.public.to_bytes().into();
+        assert!(verify(&id, &m).is_ok())
     }
 }

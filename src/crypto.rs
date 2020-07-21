@@ -14,9 +14,7 @@ use crate::rpc::{fill_random_bytes, IdBytes};
 pub const VALUE_MAX_SIZE: usize = 1000;
 
 const SALT_SEG: &[u8; 6] = b"4:salt";
-
 const SEQ_SEG: &[u8; 6] = b"3:seqi";
-
 const V_SEG: &[u8; 3] = b"1:v";
 
 /// Utility method for creating a random or hashed salt value.
@@ -48,10 +46,12 @@ pub fn random_salt(size: usize) -> Vec<u8> {
     salt
 }
 
-/// Sign a byte slice using a keypair's private key.
+/// Sign the value as [`signable`] using the keypair.
 #[inline]
-pub fn sign(public_key: &PublicKey, secret: &SecretKey, msg: &[u8]) -> Signature {
-    ExpandedSecretKey::from(secret).sign(msg, public_key)
+pub fn sign(public_key: &PublicKey, secret: &SecretKey, value: &[u8], seq: u64) -> Signature {
+    // TODO
+    let msg = signable(value, None, seq).unwrap();
+    ExpandedSecretKey::from(secret).sign(&msg, public_key)
 }
 
 /// Verify a signature on a message with a keypair's public key.
@@ -96,37 +96,34 @@ pub fn signature(mutable: &Mutable) -> Option<Signature> {
     }
 }
 
-#[inline]
-pub fn signable(mutable: &Mutable) -> Result<Vec<u8>, ()> {
+pub fn signable(value: &[u8], salt: Option<&Vec<u8>>, seq: u64) -> Result<Vec<u8>, ()> {
+    let cap = SEQ_SEG.len() + 3 + V_SEG.len() + 3 + value.len();
+
+    let mut s = if let Some(salt) = salt {
+        if salt.len() > 64 {
+            return Err(());
+        }
+        let mut s = Vec::with_capacity(cap + SALT_SEG.len() + 3 + salt.len());
+        s.extend_from_slice(SALT_SEG.as_ref());
+        s.extend_from_slice(format!("{}:", salt.len()).as_bytes());
+        s.extend_from_slice(salt.as_slice());
+        s
+    } else {
+        Vec::with_capacity(cap)
+    };
+
+    s.extend_from_slice(SEQ_SEG.as_ref());
+    s.extend_from_slice(format!("{}e", seq).as_bytes());
+    s.extend_from_slice(V_SEG.as_ref());
+    s.extend_from_slice(format!("{}:", value.len()).as_bytes());
+    s.extend_from_slice(value);
+
+    Ok(s)
+}
+
+pub fn signable_mutable(mutable: &Mutable) -> Result<Vec<u8>, ()> {
     if let Some(ref val) = mutable.value {
-        let cap = SEQ_SEG.len() + 3 + V_SEG.len() + 3 + val.len();
-
-        let mut s = if let Some(ref salt) = mutable.salt {
-            if salt.len() > 64 {
-                return Err(());
-            }
-            let mut s = Vec::with_capacity(cap + SALT_SEG.len() + 3 + salt.len());
-            s.extend_from_slice(SALT_SEG.as_ref());
-
-            s.extend_from_slice(format!("{}:", salt.len()).as_bytes());
-
-            s.extend_from_slice(salt.as_slice());
-            s
-        } else {
-            Vec::with_capacity(cap)
-        };
-
-        s.extend_from_slice(SEQ_SEG.as_ref());
-
-        s.extend_from_slice(format!("{}e", mutable.seq.unwrap_or_default()).as_bytes());
-
-        s.extend_from_slice(V_SEG.as_ref());
-
-        s.extend_from_slice(format!("{}:", val.len()).as_bytes());
-
-        s.extend_from_slice(val.as_slice());
-
-        Ok(s)
+        signable(val, mutable.salt.as_ref(), mutable.seq.unwrap_or_default())
     } else {
         Err(())
     }
@@ -144,7 +141,7 @@ mod tests {
             seq: None,
             salt: None,
         };
-        let sign = signable(&mutable).unwrap();
+        let sign = signable_mutable(&mutable).unwrap();
 
         assert_eq!(
             sign.as_slice(),
