@@ -961,9 +961,11 @@ impl QueryStreamInner {
 #[cfg(test)]
 mod tests {
     use async_std::net::Ipv4Addr;
-    use futures::StreamExt;
+    use futures::{FutureExt, SinkExt, StreamExt};
 
     use super::*;
+    use crate::store::verify;
+    use futures::future::FusedFuture;
 
     macro_rules! spawn_dhts {
         ($num:expr, $bs:expr) => {
@@ -1015,6 +1017,90 @@ mod tests {
     }
 
     #[async_std::test]
+    async fn mutable_put_get() -> Result<(), Box<dyn std::error::Error>> {
+        pretty_env_logger::init();
+        use futures::select;
+        // create an ephemeral bootstrap node
+        let bs_addr = bootstrap_dht!();
+        // spawn some nodes bootstrapped with `bs`
+        let num_spawned = 10;
+        spawn_dhts!(num_spawned, &[bs_addr]);
+
+        // the payloads used for the puts
+        let hello = b"hello friend!";
+        let bye = b"goodbye friend!";
+
+        // sign the `Mutable`s with keypair
+        let opts = PutOpts::with_keypair(crypto::keypair());
+        let key = opts.id();
+
+        let mut a =
+            HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
+        a.next().await;
+
+        // 1. node `a` will put the value on the DHT
+        a.put_mutable(hello, opts);
+
+        let mut opts = match a.next().await {
+            Some(HyperDhtEvent::PutMutableResult { opts, .. }) => Some(*opts),
+            _ => panic!("expected result for the mutable value"),
+        };
+
+        // channel used to signal from b -> a that b finished another put_mutable
+        let (mut tx, mut rx) = futures::channel::mpsc::channel(0);
+
+        let mut b =
+            HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
+
+        // 2. node `b` queries the DHT for the value
+        b.get_mutable(key.clone());
+        async_std::task::spawn(async move {
+            loop {
+                if let Some(event) = b.next().await {
+                    match event {
+                        HyperDhtEvent::GetMutableResult(get) => {
+                            // expected answers from every non ephemeral node `num_spawned` + `a`
+                            assert_eq!(get.len(), num_spawned + 1);
+                            let expected_val = Some(hello.to_vec());
+                            assert!(get.values().all(|mutable| mutable.value == expected_val));
+
+                            let mut opts = opts.take().unwrap();
+                            // seq must be incremented when updating immutable data
+                            opts.seq += 1;
+
+                            // 3. update the value on the DHT
+                            b.put_mutable(bye, opts);
+                        }
+                        HyperDhtEvent::PutMutableResult { opts, .. } => {
+                            // 4. value updated, signal node `a` that it can try to get it
+                            tx.send(()).await.unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        loop {
+            select! {
+                _ = rx.next() => {
+                    // 5. get the updated value on the DHT
+                    a.get_mutable(key.clone());
+                },
+                ev = a.next().fuse() => {
+                    if let Some(HyperDhtEvent::GetMutableResult(get)) = ev {
+                        // 6. received the updated value after querying the DHT
+                        assert_eq!(get.len(), num_spawned + 1);
+                        let expected_val = Some(bye.to_vec());
+                        assert!(get.values().all(|mutable| mutable.value == expected_val));
+                        return  Ok(());
+                    }
+                }
+            };
+        }
+    }
+
+    #[async_std::test]
     async fn immutable_put_get() -> Result<(), Box<dyn std::error::Error>> {
         // create an ephemeral bootstrap node
         let bs_addr = bootstrap_dht!();
@@ -1043,16 +1129,26 @@ mod tests {
 
         let mut b =
             HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
-        b.get_immutable(key.clone());
+
+        // value not yet available locally
+        assert!(b.get_immutable(key.clone()).is_left());
         loop {
             if let Some(HyperDhtEvent::GetImmutableResult(get)) = b.next().await {
                 assert_eq!(get.key, key);
                 // expected answers from every non ephemeral node `num_spawned` + `a`
                 assert_eq!(get.len(), num_spawned + 1);
                 assert!(get.values().all(|val| val == payload));
-                return Ok(());
+                break;
             }
         }
+
+        // value now available locally, no need to query the DHT.
+        assert_eq!(
+            b.get_immutable(key.clone()),
+            Either::Right((key, payload.to_vec()))
+        );
+
+        Ok(())
     }
 
     #[async_std::test]
@@ -1132,5 +1228,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn verify_mutable() {
+        let mut opts = PutOpts::with_keypair(crypto::keypair());
+        let key = opts.id();
+        let a = opts.mutable(b"v1".to_vec());
+        assert!(verify(&key, &a).is_ok());
+        opts.seq += 1;
+        let b = opts.mutable(b"v2".to_vec());
+        assert!(verify(&key, &b).is_ok());
     }
 }
