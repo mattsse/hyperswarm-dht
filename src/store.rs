@@ -220,7 +220,7 @@ mod tests {
         use ed25519_dalek::ed25519::signature::Signature;
         let value = b"hello friend";
         let keypair = crypto::keypair();
-        let signature = crypto::sign(&keypair.public, &keypair.secret, value.as_ref(), 0)
+        let signature = crypto::sign(&keypair.public, &keypair.secret, value.as_ref(), None, 0)
             .as_bytes()
             .to_vec();
 

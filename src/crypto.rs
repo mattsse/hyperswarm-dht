@@ -48,9 +48,14 @@ pub fn random_salt(size: usize) -> Vec<u8> {
 
 /// Sign the value as [`signable`] using the keypair.
 #[inline]
-pub fn sign(public_key: &PublicKey, secret: &SecretKey, value: &[u8], seq: u64) -> Signature {
-    // TODO
-    let msg = signable(value, None, seq).unwrap();
+pub fn sign(
+    public_key: &PublicKey,
+    secret: &SecretKey,
+    value: &[u8],
+    salt: Option<&Vec<u8>>,
+    seq: u64,
+) -> Signature {
+    let msg = signable(value, salt, seq).expect("salt exceeds max len");
     ExpandedSecretKey::from(secret).sign(&msg, public_key)
 }
 

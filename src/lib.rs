@@ -521,9 +521,11 @@ impl PutOpts {
     fn mutable(&self, value: Vec<u8>) -> Mutable {
         use ed25519_dalek::ed25519::signature::Signature;
         let signature = match &self.key {
-            PutKey::KeyPair(kp) => crypto::sign(&kp.public, &kp.secret, &value, self.seq)
-                .as_bytes()
-                .to_vec(),
+            PutKey::KeyPair(kp) => {
+                crypto::sign(&kp.public, &kp.secret, &value, self.salt.as_ref(), self.seq)
+                    .as_bytes()
+                    .to_vec()
+            }
             PutKey::Signature((_, sig)) => sig.as_bytes().to_vec(),
         };
 
@@ -1018,7 +1020,6 @@ mod tests {
 
     #[async_std::test]
     async fn mutable_put_get() -> Result<(), Box<dyn std::error::Error>> {
-        pretty_env_logger::init();
         use futures::select;
         // create an ephemeral bootstrap node
         let bs_addr = bootstrap_dht!();
