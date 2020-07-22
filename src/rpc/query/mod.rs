@@ -23,7 +23,8 @@ mod fixed;
 mod peers;
 pub mod table;
 
-/// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
+/// A `QueryPool` provides an aggregate state machine for driving `Query`s to
+/// completion.
 #[derive(Debug)]
 pub struct QueryPool {
     local_id: Key<IdBytes>,
@@ -122,7 +123,8 @@ impl QueryPool {
         self.queries.get(id)
     }
 
-    /// Returns a mutable reference to a query with the given ID, if it is in the pool.
+    /// Returns a mutable reference to a query with the given ID, if it is in
+    /// the pool.
     pub fn get_mut(&mut self, id: &QueryId) -> Option<&mut QueryStream> {
         self.queries.get_mut(id)
     }
@@ -205,7 +207,8 @@ pub struct QueryStream {
     cmd: Command,
     /// Stats about this query
     stats: QueryStats,
-    /// Whether this stream should produce rpc messages of type [`Type::Query`] or [`Type::Update`]
+    /// Whether this stream should produce rpc messages of type [`Type::Query`]
+    /// or [`Type::Update`]
     ty: QueryType,
     /// The value to include in each message
     value: Option<Vec<u8>>,

@@ -133,7 +133,9 @@ impl HyperDht {
 
     /// Fetch a mutable value from the DHT.
     ///
-    /// if the querying node already has the immutable value then there's no need to query the dht. In that case [`Either::Right`] is returned containing the key and the corresponding immutable value.
+    /// if the querying node already has the immutable value then there's no
+    /// need to query the dht. In that case [`Either::Right`] is returned
+    /// containing the key and the corresponding immutable value.
     pub fn get_immutable(
         &mut self,
         key: impl Into<IdBytes>,
@@ -504,7 +506,8 @@ impl Stream for HyperDht {
 pub struct PutOpts {
     /// The crypto to identification and offline signing of the value
     pub key: PutKey,
-    /// A number which should be increased every time put is passed a new value for the same keypair
+    /// A number which should be increased every time put is passed a new value
+    /// for the same keypair
     pub seq: u64,
     /// If supplied it will salt the signature used to verify mutable values.
     pub salt: Option<Vec<u8>>,
@@ -583,7 +586,8 @@ pub enum PutKey {
 pub struct GetOpts {
     /// The public key
     pub key: IdBytes,
-    /// A number which will only return values with corresponding seq values that are greater than or equal to the supplied seq option
+    /// A number which will only return values with corresponding seq values
+    /// that are greater than or equal to the supplied seq option
     pub seq: u64,
     /// If supplied it will salt the signature used to verify mutable values.
     pub salt: Option<Vec<u8>>,
@@ -622,9 +626,11 @@ impl<T: Into<IdBytes>> From<T> for GetOpts {
 pub struct QueryOpts {
     /// The topic to announce
     pub topic: IdBytes,
-    /// Explicitly set the port you want to announce. Per default the UDP socket port is announced.
+    /// Explicitly set the port you want to announce. Per default the UDP socket
+    /// port is announced.
     pub port: Option<u32>,
-    /// Optionally announce a LAN address as well. Only people with the same public IP as you will get these when doing a lookup
+    /// Optionally announce a LAN address as well. Only people with the same
+    /// public IP as you will get these when doing a lookup
     pub local_addr: Option<SocketAddr>,
 }
 
@@ -744,7 +750,8 @@ pub enum HyperDhtEvent {
     GetImmutableResult(GetResult<Vec<u8>>),
     /// The result of [`HyperDht::get_mutable`].
     GetMutableResult(GetResult<Mutable>),
-    /// Received a query with a custom command that is not automatically handled by the DHT
+    /// Received a query with a custom command that is not automatically handled
+    /// by the DHT
     CustomCommandQuery {
         /// The unknown command
         command: String,
@@ -759,7 +766,8 @@ pub enum HyperDhtEvent {
 pub struct GetResult<T: fmt::Debug> {
     /// The identifier for the value
     pub key: IdBytes,
-    /// All matching immutable values from the DHT together with the id of the responding node
+    /// All matching immutable values from the DHT together with the id of the
+    /// responding node
     pub responses: Vec<PeerResponseItem<T>>,
     /// Tracking id of the query
     pub query_id: QueryId,
@@ -826,7 +834,8 @@ impl Lookup {
         self.peers.iter().flat_map(|peer| peer.local_peers.iter())
     }
 
-    /// Returns an iterator over all peers (remote and LAN) that announced the topic hash.
+    /// Returns an iterator over all peers (remote and LAN) that announced the
+    /// topic hash.
     pub fn all_peers<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
         self.peers
             .iter()
@@ -964,11 +973,12 @@ impl QueryStreamInner {
 #[cfg(test)]
 mod tests {
     use async_std::net::Ipv4Addr;
+    use futures::future::FusedFuture;
     use futures::{FutureExt, SinkExt, StreamExt};
 
-    use super::*;
     use crate::store::verify;
-    use futures::future::FusedFuture;
+
+    use super::*;
 
     macro_rules! spawn_dhts {
         ($num:expr, $bs:expr) => {
@@ -1166,7 +1176,8 @@ mod tests {
 
         async_std::task::spawn(async move {
             if let Some(HyperDhtEvent::Bootstrapped { .. }) = state.next().await {
-                // after initial bootstrapping the state`s address is included in the bs` routing table. Then the `node` can start to announce
+                // after initial bootstrapping the state`s address is included in the bs`
+                // routing table. Then the `node` can start to announce
                 tx.send(()).expect("Failed to send");
             } else {
                 panic!("expected bootstrap result first")

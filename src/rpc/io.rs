@@ -437,7 +437,8 @@ where
         self.last_rotation = Instant::now()
     }
 
-    /// Remove the matching request from the sending queue or stop waiting for a response if already sent.
+    /// Remove the matching request from the sending queue or stop waiting for a
+    /// response if already sent.
     pub fn cancel(
         &mut self,
         rid: RequestId,
@@ -566,6 +567,7 @@ pub enum IoHandlerEvent<TUserData> {
     InMessageErr { err: io::Error, peer: Peer },
     /// Error while reading from socket
     InSocketErr { err: io::Error },
-    /// Received a response with a request id that was doesn't match any pending responses.
+    /// Received a response with a request id that was doesn't match any pending
+    /// responses.
     InResponseBadRequestId { msg: Message, peer: Peer },
 }

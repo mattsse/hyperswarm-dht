@@ -136,9 +136,9 @@ where
 
     /// Returns the key of the entry.
     ///
-    /// Returns `None` if the `Key` used to construct this `Entry` is not a valid
-    /// key for an entry in a bucket, which is the case for the `local_key` of
-    /// the `KBucketsTable` referring to the local node.
+    /// Returns `None` if the `Key` used to construct this `Entry` is not a
+    /// valid key for an entry in a bucket, which is the case for the
+    /// `local_key` of the `KBucketsTable` referring to the local node.
     pub fn key(&self) -> Option<&TKey> {
         match self {
             Entry::Present(entry, _) => Some(entry.key()),

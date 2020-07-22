@@ -52,7 +52,8 @@ enum PeerState {
     /// The iterator is waiting for a result to be reported back for the peer.
     Waiting,
 
-    /// The iterator has been informed that the attempt to contact the peer failed.
+    /// The iterator has been informed that the attempt to contact the peer
+    /// failed.
     Failed,
 
     /// The iterator has been informed of a successful result from the peer.

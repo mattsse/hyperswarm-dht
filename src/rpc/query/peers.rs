@@ -9,9 +9,9 @@ pub enum PeersIterState {
     /// from `peer`, in addition to any other peers for which it is already
     /// waiting for results.
     ///
-    /// `None` indicates that the iterator is waiting for results and there is no
-    /// new peer to contact, despite the iterator not being at capacity w.r.t.
-    /// the permitted parallelism.
+    /// `None` indicates that the iterator is waiting for results and there is
+    /// no new peer to contact, despite the iterator not being at capacity
+    /// w.r.t. the permitted parallelism.
     Waiting(Option<Peer>),
 
     /// The iterator is waiting for results and is at capacity w.r.t. the

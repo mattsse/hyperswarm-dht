@@ -12,7 +12,8 @@ use crate::rpc::IdBytes;
 use crate::{crypto, ERR_INVALID_INPUT};
 use crate::{IMMUTABLE_STORE_CMD, MUTABLE_STORE_CMD};
 
-/// PUT_VALUE_MAX_SIZE (1000B) + packet overhead (i.e. the key etc.) should be less than the network MTU, normally 1400 bytes
+/// PUT_VALUE_MAX_SIZE (1000B) + packet overhead (i.e. the key etc.) should be
+/// less than the network MTU, normally 1400 bytes
 pub const PUT_VALUE_MAX_SIZE: usize = VALUE_MAX_SIZE;
 
 #[derive(Debug, Clone)]

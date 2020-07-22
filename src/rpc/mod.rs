@@ -128,7 +128,8 @@ impl DhtConfig {
         self
     }
 
-    /// Set the key rotation interval to rotate the keys used to create roundtrip tokens
+    /// Set the key rotation interval to rotate the keys used to create
+    /// roundtrip tokens
     pub fn set_key_rotation_interval(mut self, rotation: Duration) -> Self {
         self.io_config.rotation = Some(rotation);
         self
@@ -195,9 +196,11 @@ impl DhtConfig {
         self
     }
 
-    /// Set ephemeral: true so other peers do not add us to the peer list, simply bootstrap.
+    /// Set ephemeral: true so other peers do not add us to the peer list,
+    /// simply bootstrap.
     ///
-    /// An ephemeral dht node won't expose its id to remote peers, hence being ignored.
+    /// An ephemeral dht node won't expose its id to remote peers, hence being
+    /// ignored.
     pub fn ephemeral(mut self) -> Self {
         self.ephemeral = true;
         self
@@ -241,7 +244,8 @@ impl DhtConfig {
 impl RpcDht {
     /// Creates a new `Dht` network behaviour with the given configuration.
     ///
-    /// If no socket was created within then `DhtConfig`, a new socket at a random port will be created.
+    /// If no socket was created within then `DhtConfig`, a new socket at a
+    /// random port will be created.
     pub async fn with_config(config: DhtConfig) -> std::io::Result<Self> {
         let local_id = Key::new(config.local_id.unwrap_or_else(IdBytes::random));
 
@@ -313,7 +317,8 @@ impl RpcDht {
 
     /// Add an additional command to the supported command list.
     ///
-    /// Messages related to additional commands will be available as a [`CustomCommandRequest`] event.
+    /// Messages related to additional commands will be available as a
+    /// [`CustomCommandRequest`] event.
     #[inline]
     pub fn register_command(&mut self, cmd: impl ToString) -> bool {
         self.commands.insert(cmd.to_string())
@@ -564,8 +569,12 @@ impl RpcDht {
     ///
     /// # Note
     ///
-    /// This only checks if this custom `command` query is currently registered, but does not reply. Instead the incoming query is delegated to via [`Stream::poll`] as [`CommandQuery`] in [`RpcDhtEvent::RequestResult::RequestOk::CustomCommandRequest`].
-    /// It it the command's registrar's responsibility to process this query and eventually reply.
+    /// This only checks if this custom `command` query is currently registered,
+    /// but does not reply. Instead the incoming query is delegated to via
+    /// [`Stream::poll`] as [`CommandQuery`] in
+    /// [`RpcDhtEvent::RequestResult::RequestOk::CustomCommandRequest`].
+    /// It is the command registrar's responsibility to process this query and
+    /// eventually reply.
     fn on_command_req(&mut self, ty: Type, command: String, msg: Message, peer: Peer) {
         if let Some(target) = msg.valid_target_id_bytes() {
             if self.commands.contains(&command) {
@@ -1029,8 +1038,8 @@ impl Response {
     }
 }
 
-/// Unique identifier for a request. Must be passed back in order to answer a request from
-/// the remote.
+/// Unique identifier for a request. Must be passed back in order to answer a
+/// request from the remote.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct RequestId(pub(crate) u64);
 
@@ -1073,7 +1082,8 @@ pub enum RequestOk {
     ///
     /// # Note
     ///
-    /// Custom commands are not automatically replied to and need to be answered manually
+    /// Custom commands are not automatically replied to and need to be answered
+    /// manually
     CustomCommandRequest {
         /// The query we received and need to respond to
         query: CommandQuery,
@@ -1093,7 +1103,8 @@ pub enum RequestError {
     },
     /// The `target` field of message was required but was empty
     MissingTarget { msg: Message, peer: Peer },
-    /// Received a message with a type other than [`Type::Query`], [`Type::Response`], [`Type::Update`]
+    /// Received a message with a type other than [`Type::Query`],
+    /// [`Type::Response`], [`Type::Update`]
     InvalidType { ty: i32, msg: Message, peer: Peer },
     /// Received a request with no command attached.
     MissingCommand { peer: Peer },

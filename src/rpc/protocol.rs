@@ -16,7 +16,8 @@ impl Decoder for DhtRpcCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // Note: the udpsocket reads an entire datagram message from the remote address. Therefor `src` should include the entire `Message` payload
+        // Note: the udpsocket reads an entire datagram message from the remote address.
+        // Therefor `src` should include the entire `Message` payload
         Message::decode(src).map(Some).map_err(invalid_data)
     }
 }
