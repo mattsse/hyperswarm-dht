@@ -40,6 +40,7 @@ pub mod protocol;
 pub mod query;
 pub mod udp;
 
+#[derive(Debug)]
 pub struct RpcDht {
     /// Identifier of this node
     id: Key<IdBytes>,
@@ -51,7 +52,6 @@ pub struct RpcDht {
     /// The currently active (i.e. in-progress) queries.
     queries: QueryPool,
     /// Custom commands
-    // TODO support custom encoding?
     commands: HashSet<String>,
     /// Queued events to return when being polled.
     queued_events: VecDeque<RpcDhtEvent>,

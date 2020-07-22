@@ -35,7 +35,8 @@ pub const VERSION: u64 = 1;
 
 const ROTATE_INTERVAL: u64 = 300_000;
 
-struct Request<TUserData> {
+#[derive(Debug, Clone)]
+struct Request<TUserData: fmt::Debug + Clone> {
     /// The message send
     message: Message,
     /// The remote peer
@@ -45,7 +46,7 @@ struct Request<TUserData> {
     user_data: TUserData,
 }
 
-impl<TUserData> Request<TUserData> {
+impl<TUserData: fmt::Debug + Clone> Request<TUserData> {
     fn into_event(self) -> Result<MessageEvent<TUserData>, Self> {
         if let Ok(ty) = self.message.get_type() {
             match ty {
@@ -67,7 +68,8 @@ impl<TUserData> Request<TUserData> {
     }
 }
 
-pub enum MessageEvent<TUserData> {
+#[derive(Debug)]
+pub enum MessageEvent<TUserData: fmt::Debug + Clone> {
     Update {
         msg: Message,
         peer: Peer,
@@ -85,7 +87,7 @@ pub enum MessageEvent<TUserData> {
     // TODO FireAndForget like Response?
 }
 
-impl<TUserData> MessageEvent<TUserData> {
+impl<TUserData: fmt::Debug + Clone> MessageEvent<TUserData> {
     fn inner(&self) -> (&Message, &Peer) {
         match self {
             MessageEvent::Update { peer, msg, .. } => (msg, peer),
@@ -103,7 +105,8 @@ impl<TUserData> MessageEvent<TUserData> {
     }
 }
 
-pub struct IoHandler<TUserData> {
+#[derive(Debug)]
+pub struct IoHandler<TUserData: fmt::Debug + Clone> {
     id: Option<Key<IdBytes>>,
     socket: UdpFramed<DhtRpcCodec>,
     /// Messages to send

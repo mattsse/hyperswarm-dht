@@ -62,6 +62,7 @@ pub const MUTABLE_STORE_CMD: &str = "mutable-store";
 pub const IMMUTABLE_STORE_CMD: &str = "immutable-store";
 pub const PEERS_CMD: &str = "peers";
 
+#[derive(Debug)]
 pub struct HyperDht {
     /// The underlying Rpc DHT including IO
     inner: RpcDht,

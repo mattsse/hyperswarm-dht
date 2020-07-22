@@ -61,11 +61,10 @@ pub enum StorageKey {
     Immutable(IdBytes),
 }
 
+#[derive(Debug)]
 pub struct Store {
     /// Value cache
     inner: LruCache<StorageKey, StorageEntry>,
-    // Keep track of all matching values from the DHT.
-    // streams: FnvHashMap<QueryId, ()>,
 }
 
 impl Store {
