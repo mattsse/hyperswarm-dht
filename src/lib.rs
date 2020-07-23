@@ -184,11 +184,15 @@ impl HyperDht {
     ///
     /// The result of the query is delivered in a
     /// [`HyperDhtEvent::GetMutableResult`].
-    pub fn get_mutable(&mut self, get: impl Into<GetOpts>) -> Result<QueryId, ()> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if a salt was set that exceeds 64 bytes
+    pub fn get_mutable(&mut self, get: impl Into<GetOpts>) -> QueryId {
         let get = get.into();
         if get.salt.as_ref().map(|s| s.len() > 64).unwrap_or_default() {
             // salt size must be no greater than 64 bytes
-            return Err(());
+            panic!("salt size is too big")
         }
 
         let value = Mutable {
@@ -214,7 +218,7 @@ impl HyperDht {
                 value,
             },
         );
-        Ok(query_id)
+        query_id
     }
 
     /// Initiates an iterative query to the closest peers to put the value as
@@ -222,10 +226,15 @@ impl HyperDht {
     ///
     /// The result of the query is delivered in a
     /// [`HyperDhtEvent::PutImmutableResult`].
-    pub fn put_immutable(&mut self, value: &[u8]) -> Result<QueryId, ()> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value.len()` > `PUT_VALUE_MAX_SIZE` to make sure it fits
+    /// completely in a udp dataframe.
+    pub fn put_immutable(&mut self, value: &[u8]) -> QueryId {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
-            return Err(());
+            panic!("value is too big")
         }
         let key = crypto::hash_id(&value);
         // set locally for easy cached retrieval
@@ -239,7 +248,7 @@ impl HyperDht {
 
         self.queries
             .insert(query_id, QueryStreamType::PutImmutable { query_id, key });
-        Ok(query_id)
+        query_id
     }
 
     /// Initiates an iterative query to the closest peers to put the value as
@@ -251,11 +260,11 @@ impl HyperDht {
     /// # Panics
     ///
     /// Panics if `value.len()` > `PUT_VALUE_MAX_SIZE` to make sure it fits
-    /// completly in a udp dataframe
-    pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> Result<QueryId, ()> {
+    /// completely in a udp dataframe.
+    pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> QueryId {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
-            return Err(());
+            panic!("value is too big")
         }
 
         let value = opts.mutable(value.to_vec());
@@ -277,7 +286,7 @@ impl HyperDht {
             },
         );
 
-        Ok(query_id)
+        query_id
     }
 
     /// Callback for an incoming `peers` command query
@@ -1155,7 +1164,7 @@ mod tests {
             HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
 
         // 2. node `b` queries the DHT for the value
-        b.get_mutable(key.clone()).unwrap();
+        b.get_mutable(key.clone());
         async_std::task::spawn(async move {
             loop {
                 if let Some(event) = b.next().await {
