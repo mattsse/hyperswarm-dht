@@ -4,11 +4,11 @@ use std::task::{Context, Poll};
 
 use async_std::{
     net::UdpSocket,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     stream::Stream,
 };
 use bytes::{BufMut, BytesMut};
-use futures::{pin_mut, ready, Future, FutureExt, Sink};
+use futures::{pin_mut, ready, Future, Sink};
 use futures_codec::{Decoder, Encoder};
 
 /// A unified `Stream` and `Sink` interface to an underlying `UdpSocket`, using
@@ -211,7 +211,7 @@ mod tests {
             Ok::<_, io::Error>(())
         });
 
-        let mut socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
         socket.send_to(QUICK_BROWN_FOX.as_bytes(), addr).await?;
         let mut buf = vec![0; QUICK_BROWN_FOX.len()];
 

@@ -336,10 +336,6 @@ impl RpcDht {
         self.id.preimage()
     }
 
-    pub(crate) fn queries_mut(&mut self) -> &mut QueryPool {
-        &mut self.queries
-    }
-
     /// Ping a remote
     pub fn ping(&mut self, peer: &PeerId) {
         self.io.query(
@@ -375,7 +371,10 @@ impl RpcDht {
         }
     }
 
-    fn reping(&mut self) {}
+    #[allow(dead_code)]
+    fn reping(&mut self) {
+        unimplemented!()
+    }
 
     pub fn query_and_update(
         &mut self,
@@ -1128,14 +1127,7 @@ pub enum ResponseError {
     InvalidPong(Peer),
 }
 
-pub struct ResponseBuilder {}
-
-impl ResponseBuilder {
-    pub fn into_error(self, _err: impl Into<String>) {}
-
-    pub fn into_resp(self, _value: Vec<u8>) {}
-}
-
+/// Fill the slice with random bytes
 #[inline]
 pub(crate) fn fill_random_bytes(dest: &mut [u8]) {
     use rand::SeedableRng;

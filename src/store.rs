@@ -1,4 +1,4 @@
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 use ed25519_dalek::PublicKey;
 use lru::LruCache;

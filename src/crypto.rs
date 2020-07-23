@@ -1,5 +1,3 @@
-use std::convert::TryInto;
-
 use blake2::crypto_mac::generic_array::{typenum::U64, GenericArray};
 use blake2::{Blake2b, VarBlake2b};
 use ed25519_dalek::ed25519::signature::Signature as Sig;

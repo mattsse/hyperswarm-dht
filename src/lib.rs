@@ -1,7 +1,5 @@
 //! Rust Implementation of the hyperswarm DHT
-#![allow(unused)]
-#![warn(missing_debug_implementations)]
-//#![warn(missing_docs, , )]
+#![warn(unused, rust_2018_idioms)]
 
 use core::cmp;
 use std::convert::{TryFrom, TryInto};
@@ -11,7 +9,6 @@ use std::net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::pin::Pin;
 use std::time::Duration;
 
-use bytes::Buf;
 use ed25519_dalek::{Keypair, PublicKey, Signature};
 use either::Either;
 use fnv::FnvHashMap;
@@ -51,6 +48,7 @@ pub mod peers;
 pub mod rpc;
 pub mod store;
 
+#[allow(dead_code)]
 const EPH_AFTER: u64 = 1000 * 60 * 20;
 
 /// The publicly available hyperswarm DHT addresses
@@ -113,7 +111,8 @@ impl HyperDht {
         self.inner.local_addr()
     }
 
-    fn tally(&mut self, only_ip: bool) {
+    #[allow(dead_code)]
+    fn tally(&mut self, _only_ip: bool) {
         unimplemented!()
     }
 
@@ -248,6 +247,11 @@ impl HyperDht {
     ///
     /// The result of the query is delivered in a
     /// [`HyperDhtEvent::PutMutableResult`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value.len()` > `PUT_VALUE_MAX_SIZE` to make sure it fits
+    /// completly in a udp dataframe
     pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> Result<QueryId, ()> {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
@@ -1060,8 +1064,6 @@ impl QueryStreamInner {
 
 #[cfg(test)]
 mod tests {
-    use async_std::net::Ipv4Addr;
-    use futures::future::FusedFuture;
     use futures::{FutureExt, SinkExt, StreamExt};
 
     use crate::store::verify;
@@ -1153,7 +1155,7 @@ mod tests {
             HyperDht::with_config(DhtConfig::default().set_bootstrap_nodes(&[&bs_addr])).await?;
 
         // 2. node `b` queries the DHT for the value
-        b.get_mutable(key.clone());
+        b.get_mutable(key.clone()).unwrap();
         async_std::task::spawn(async move {
             loop {
                 if let Some(event) = b.next().await {
@@ -1171,7 +1173,7 @@ mod tests {
                             // 3. update the value on the DHT
                             b.put_mutable(bye, opts);
                         }
-                        HyperDhtEvent::PutMutableResult { opts, .. } => {
+                        HyperDhtEvent::PutMutableResult { .. } => {
                             // 4. value updated, signal node `a` that it can try to get it
                             tx.send(()).await.unwrap();
                         }
@@ -1312,7 +1314,7 @@ mod tests {
                         let remotes = lookup.remotes().cloned().collect::<Vec<_>>();
                         assert_eq!(remotes.len(), 1);
 
-                        let mut node_addr = node.local_addr()?;
+                        let node_addr = node.local_addr()?;
                         if let SocketAddr::V4(mut addr) = node_addr {
                             addr.set_port(port as u16);
                             assert_eq!(remotes[0], SocketAddr::V4(addr));

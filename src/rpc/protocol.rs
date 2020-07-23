@@ -1,7 +1,6 @@
 use std::io;
 
 use bytes::BytesMut;
-use futures::io::Error;
 use futures_codec::{Decoder, Encoder};
 use prost::Message as ProstMessage;
 
