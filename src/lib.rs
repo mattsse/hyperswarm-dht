@@ -1,4 +1,7 @@
+//! Rust Implementation of the hyperswarm DHT
 #![allow(unused)]
+#![warn(rust_2018_idioms)]
+//#![warn(missing_docs, missing_debug_implementations, )]
 
 use core::cmp;
 use std::convert::{TryFrom, TryInto};
@@ -50,7 +53,8 @@ pub mod store;
 
 const EPH_AFTER: u64 = 1000 * 60 * 20;
 
-const DEFAULT_BOOTSTRAP: [&str; 3] = [
+/// The publicly available hyperswarm DHT addresses
+pub const DEFAULT_BOOTSTRAP: [&str; 3] = [
     "bootstrap1.hyperdht.org:49737",
     "bootstrap2.hyperdht.org:49737",
     "bootstrap3.hyperdht.org:49737",
@@ -58,16 +62,22 @@ const DEFAULT_BOOTSTRAP: [&str; 3] = [
 
 pub(crate) const ERR_INVALID_INPUT: &str = "ERR_INVALID_INPUT";
 
+/// The command identifier for `Mutable` storage
 pub const MUTABLE_STORE_CMD: &str = "mutable-store";
+/// The command identifier for immutable storage
 pub const IMMUTABLE_STORE_CMD: &str = "immutable-store";
+/// The command identifier to (un)announce/lookup peers
 pub const PEERS_CMD: &str = "peers";
 
+/// The implementation of the hyperswarm DHT
 #[derive(Debug)]
 pub struct HyperDht {
     /// The underlying Rpc DHT including IO
     inner: RpcDht,
     /// Map to track the queries currently in progress
     queries: FnvHashMap<QueryId, QueryStreamType>,
+    /// If `true`, the node will become non-ephemeral after the node has shown
+    /// to be long-lived
     adaptive: bool,
     /// Cache for known peers
     peers: PeerCache,
@@ -97,6 +107,7 @@ impl HyperDht {
         })
     }
 
+    /// The local address of the underlying `UdpSocket`
     #[inline]
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.inner.local_addr()
@@ -131,11 +142,15 @@ impl HyperDht {
         }
     }
 
-    /// Fetch a mutable value from the DHT.
+    /// Initiates an iterative query to the closest peers to fetch the immutable
+    /// value from the DHT.
     ///
-    /// if the querying node already has the immutable value then there's no
+    /// If the querying node already has the immutable value then there's no
     /// need to query the dht. In that case [`Either::Right`] is returned
     /// containing the key and the corresponding immutable value.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::GetMutableResult`].
     pub fn get_immutable(
         &mut self,
         key: impl Into<IdBytes>,
@@ -165,7 +180,11 @@ impl HyperDht {
         Either::Left(query_id)
     }
 
-    /// Fetch a mutable value from the DHT.
+    /// Initiates an iterative query to the closest peers to fetch the `Mutable`
+    /// from the DHT.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::GetMutableResult`].
     pub fn get_mutable(&mut self, get: impl Into<GetOpts>) -> Result<QueryId, ()> {
         let get = get.into();
         if get.salt.as_ref().map(|s| s.len() > 64).unwrap_or_default() {
@@ -199,7 +218,11 @@ impl HyperDht {
         Ok(query_id)
     }
 
-    /// Store an immutable value in the DHT.
+    /// Initiates an iterative query to the closest peers to put the value as
+    /// immutable on the DHT.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::PutImmutableResult`].
     pub fn put_immutable(&mut self, value: &[u8]) -> Result<QueryId, ()> {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
@@ -220,7 +243,11 @@ impl HyperDht {
         Ok(query_id)
     }
 
-    /// Store a mutable value in the DHT.
+    /// Initiates an iterative query to the closest peers to put the value as
+    /// `Mutable`.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::PutMutableResult`].
     pub fn put_mutable(&mut self, value: &[u8], opts: PutOpts) -> Result<QueryId, ()> {
         let value = value.to_vec();
         if value.len() > PUT_VALUE_MAX_SIZE {
@@ -349,7 +376,10 @@ impl HyperDht {
         }
     }
 
-    /// Look for peers in the DHT on the given topic.
+    /// Initiates an iterative query to the closest peers to lookup the topic.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::LookupResult`].
     pub fn lookup(&mut self, opts: impl Into<QueryOpts>) -> QueryId {
         let opts = opts.into();
 
@@ -370,7 +400,10 @@ impl HyperDht {
         id
     }
 
-    /// Announce a port to the dht.
+    /// Initiates an iterative query to announce the topic to the closest peers.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::AnnounceResult`].
     pub fn announce(&mut self, opts: impl Into<QueryOpts>) -> QueryId {
         let opts = opts.into();
 
@@ -393,6 +426,11 @@ impl HyperDht {
         id
     }
 
+    /// Initiates an iterative query to unannounce the topic to the closest
+    /// peers.
+    ///
+    /// The result of the query is delivered in a
+    /// [`HyperDhtEvent::UnAnnounceResult`].
     pub fn unannounce(&mut self, opts: impl Into<QueryOpts>) -> QueryId {
         let opts = opts.into();
 
@@ -502,6 +540,8 @@ impl Stream for HyperDht {
         }
     }
 }
+
+/// How the value will be encrypted when put in the DHT
 #[derive(Debug)]
 pub struct PutOpts {
     /// The crypto to identification and offline signing of the value
@@ -514,6 +554,7 @@ pub struct PutOpts {
 }
 
 impl PutOpts {
+    /// Create a new opts with a `PutKey`
     pub fn new(key: PutKey) -> Self {
         Self {
             key,
@@ -548,6 +589,7 @@ impl PutOpts {
         }
     }
 
+    /// Create new opts that uses an ed25519 keypair
     pub fn with_keypair(keypair: Keypair) -> Self {
         Self {
             key: PutKey::KeyPair(keypair),
@@ -556,6 +598,7 @@ impl PutOpts {
         }
     }
 
+    /// Create new opts that uses an ed25519 public key and a signature
     pub fn with_pk_and_signature(pk: PublicKey, signature: Signature) -> Self {
         Self {
             key: PutKey::Signature((pk, signature)),
@@ -564,24 +607,29 @@ impl PutOpts {
         }
     }
 
+    /// Specify the sequence of the value
     pub fn seq(mut self, seq: u64) -> Self {
         self.seq = seq;
         self
     }
 
+    /// Set the salt to include in the targeted value
     pub fn salt(mut self, salt: Vec<u8>) -> Self {
         self.salt = Some(salt);
         self
     }
 }
 
+/// How to sign the `Mutable` storage item's payload
 #[derive(Debug)]
 pub enum PutKey {
+    /// Sign with ed25519 keypair
     KeyPair(Keypair),
     /// Use a signature instead of the key pair's private key
     Signature((PublicKey, Signature)),
 }
 
+/// Options for querying the DHT
 #[derive(Debug, Clone)]
 pub struct GetOpts {
     /// The public key
@@ -594,6 +642,7 @@ pub struct GetOpts {
 }
 
 impl GetOpts {
+    /// Create new opts with a topic only
     pub fn new(key: impl Into<IdBytes>) -> Self {
         Self {
             key: key.into(),
@@ -602,6 +651,7 @@ impl GetOpts {
         }
     }
 
+    /// Create new opts with a topic and a specifc sequence
     pub fn with_seq(key: impl Into<IdBytes>, seq: u64) -> Self {
         Self {
             key: key.into(),
@@ -610,6 +660,13 @@ impl GetOpts {
         }
     }
 
+    /// Specify the sequence of the value
+    pub fn seq(mut self, seq: u64) -> Self {
+        self.seq = seq;
+        self
+    }
+
+    /// Set the salt that was included in the initial put of the targeted value
     pub fn salt(mut self, salt: Vec<u8>) -> Self {
         self.salt = Some(salt);
         self
@@ -622,6 +679,7 @@ impl<T: Into<IdBytes>> From<T> for GetOpts {
     }
 }
 
+/// Determines what to announce or query from the DHT
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryOpts {
     /// The topic to announce
@@ -635,10 +693,7 @@ pub struct QueryOpts {
 }
 
 impl QueryOpts {
-    fn local_addr_encoded(&self) -> Option<Vec<u8>> {
-        self.local_addr.as_ref().map(|addr| addr.encode())
-    }
-
+    /// Create a opts with only a topic
     pub fn new(topic: impl Into<IdBytes>) -> Self {
         Self {
             topic: topic.into(),
@@ -647,11 +702,27 @@ impl QueryOpts {
         }
     }
 
+    /// Create new opts with a topic and a port
+    pub fn with_port(topic: impl Into<IdBytes>, port: u32) -> Self {
+        Self {
+            topic: topic.into(),
+            port: Some(port),
+            local_addr: None,
+        }
+    }
+
+    /// Set the port to announce
     pub fn port(mut self, port: u32) -> Self {
         self.port = Some(port);
         self
     }
 
+    /// The local addresses as encoded payload
+    fn local_addr_encoded(&self) -> Option<Vec<u8>> {
+        self.local_addr.as_ref().map(|addr| addr.encode())
+    }
+
+    /// Set Local addresses to announce
     pub fn local_addr(mut self, local_addr: impl ToSocketAddrs) -> Self {
         self.local_addr = local_addr
             .to_socket_addrs()
@@ -703,6 +774,11 @@ impl TryFrom<&[u8]> for QueryOpts {
     }
 }
 
+/// Events
+///
+/// The events produced by the `HyperDht` behaviour.
+///
+/// See [`HyperDht::poll`].
 #[derive(Debug)]
 pub enum HyperDhtEvent {
     /// The dht is now bootstrapped
@@ -712,6 +788,7 @@ pub enum HyperDhtEvent {
     },
     /// The result of [`HyperDht::announce`].
     AnnounceResult {
+        /// The peers that successfully received the announcement
         peers: Vec<Peers>,
         /// The announced topic.
         topic: IdBytes,
@@ -727,7 +804,9 @@ pub enum HyperDhtEvent {
     },
     /// The result of [`HyperDht::unannounce`].
     UnAnnounceResult {
+        /// The peers that received the un announce message
         peers: Vec<Peers>,
+        /// The topic that was un announced
         topic: IdBytes,
         /// Tracking id of the query
         query_id: QueryId,
@@ -762,6 +841,7 @@ pub enum HyperDhtEvent {
     },
 }
 
+/// Contains all the successfully received responses
 #[derive(Debug)]
 pub struct GetResult<T: fmt::Debug> {
     /// The identifier for the value
@@ -787,21 +867,27 @@ impl<T: fmt::Debug> GetResult<T> {
         self.responses.iter().map(|r| &r.value)
     }
 
+    /// Amount of responses
     #[inline]
     pub fn len(&self) -> usize {
         self.responses.len()
     }
 
+    /// Returns `true` if the result contains no responses.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.responses.is_empty()
     }
 }
 
+/// Represents the response received from a peer
 #[derive(Debug)]
 pub struct PeerResponseItem<T: fmt::Debug> {
+    /// Address of the peer this response came from
     pub peer: SocketAddr,
+    /// The identifier of the `peer` if included in the response
     pub peer_id: Option<IdBytes>,
+    /// The value the `peer` provided
     pub value: T,
 }
 
@@ -842,11 +928,13 @@ impl Lookup {
             .flat_map(|peer| peer.peers.iter().chain(peer.local_peers.iter()))
     }
 
+    /// Amount peers matched the lookup
     #[inline]
     pub fn len(&self) -> usize {
         self.peers.len()
     }
 
+    /// Returns `true` if the lookup contains no elements.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.peers.is_empty()
