@@ -1,7 +1,7 @@
 //! Rust Implementation of the hyperswarm DHT
 #![allow(unused)]
-#![warn(rust_2018_idioms)]
-//#![warn(missing_docs, missing_debug_implementations, )]
+#![warn(missing_debug_implementations)]
+//#![warn(missing_docs, , )]
 
 use core::cmp;
 use std::convert::{TryFrom, TryInto};

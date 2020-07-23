@@ -20,7 +20,7 @@ impl PeriodicJob {
         }
     }
 
-    pub fn poll(&mut self, cx: &mut Context, now: Instant) -> Poll<()> {
+    pub fn poll(&mut self, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
         if let Poll::Ready(Ok(_)) = Delay::poll(Pin::new(&mut self.inner), cx) {
             let deadline = now + self.interval;
             self.inner = Delay::new_at(deadline);
