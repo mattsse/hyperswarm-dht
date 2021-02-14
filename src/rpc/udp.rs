@@ -1,5 +1,7 @@
+use std::fmt;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_std::{
@@ -7,7 +9,7 @@ use async_std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     stream::Stream,
 };
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use futures::{pin_mut, ready, Future, Sink};
 use futures_codec::{Decoder, Encoder};
 
@@ -29,48 +31,70 @@ use futures_codec::{Decoder, Encoder};
 /// them into separate objects, allowing them to interact more easily.
 #[must_use = "sinks do nothing unless polled"]
 // #[cfg_attr(docsrs, doc(all(feature = "codec", feature = "udp")))]
-#[derive(Debug)]
 pub struct UdpFramed<C> {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     codec: C,
-    rd: BytesMut,
+    rd: Option<Vec<u8>>,
     wr: BytesMut,
     out_addr: SocketAddr,
     flushed: bool,
+    recv_fut: Option<
+        Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, usize, SocketAddr)>> + Send + Sync>>,
+    >,
+}
+
+impl<C: Decoder + Unpin> fmt::Debug for UdpFramed<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpFramed")
+            .field("socket", &self.socket)
+            .field("out_addr", &self.out_addr)
+            .field("flushed", &self.flushed)
+            .finish()
+    }
 }
 
 impl<C: Decoder + Unpin> Stream for UdpFramed<C> {
     type Item = Result<(C::Item, SocketAddr), C::Error>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let pin = self.get_mut();
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            if self.recv_fut.is_none() {
+                let buf = self.rd.take().unwrap();
+                let recv_fut = recv_next(self.socket.clone(), buf);
+                self.recv_fut = Some(Box::pin(recv_fut));
+            }
 
-        pin.rd.reserve(INITIAL_RD_CAPACITY);
+            if let Some(f) = &mut self.recv_fut {
+                let res = ready!(f.as_mut().poll(cx));
+                self.recv_fut = None;
+                let res = match res {
+                    Err(e) => Poll::Ready(Some(Err(e.into()))),
+                    Ok((buf, 0, _addr)) => {
+                        self.rd = Some(buf);
+                        continue;
+                    }
+                    Ok((buf, n, addr)) => {
+                        let frame_res = self.codec.decode(&mut buf[..n].into());
+                        let frame = frame_res?;
+                        let result = frame.map(|frame| Ok((frame, addr)));
+                        self.rd = Some(buf);
 
-        let (_n, addr) = unsafe {
-            // Read into the buffer without having to initialize the memory.
-            //
-            // safety: we know async_std::net::UdpSocket never reads from the memory
-            // during a recv
-            let res = {
-                let bytes = &mut *(pin.rd.bytes_mut() as *mut _ as *mut [u8]);
+                        Poll::Ready(result)
+                    }
+                };
+                return res;
+            }
+        }
+    }
+}
 
-                let fut = pin.socket.recv_from(bytes);
-                pin_mut!(fut);
-                ready!(fut.poll(cx))
-            };
-
-            let (n, addr) = res?;
-            pin.rd.advance_mut(n);
-            (n, addr)
-        };
-
-        let frame_res = pin.codec.decode(&mut pin.rd);
-        pin.rd.clear();
-        let frame = frame_res?;
-        let result = frame.map(|frame| Ok((frame, addr))); // frame -> (frame, addr)
-
-        Poll::Ready(result)
+async fn recv_next(
+    socket: Arc<UdpSocket>,
+    mut buf: Vec<u8>,
+) -> io::Result<(Vec<u8>, usize, SocketAddr)> {
+    match socket.recv_from(&mut buf).await {
+        Err(e) => Err(e),
+        Ok((n, addr)) => Ok((buf, n, addr)),
     }
 }
 
@@ -150,12 +174,13 @@ impl<C> UdpFramed<C> {
     /// See struct level documentation for more details.
     pub fn new(socket: UdpSocket, codec: C) -> UdpFramed<C> {
         UdpFramed {
-            socket,
+            socket: Arc::new(socket),
             codec,
             out_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
-            rd: BytesMut::with_capacity(INITIAL_RD_CAPACITY),
+            rd: Some(vec![0u8; INITIAL_RD_CAPACITY]),
             wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
+            recv_fut: None,
         }
     }
 
@@ -167,24 +192,13 @@ impl<C> UdpFramed<C> {
     /// coming in as it may corrupt the stream of frames otherwise being worked
     /// with.
     pub fn get_ref(&self) -> &UdpSocket {
-        &self.socket
-    }
-
-    /// Returns a mutable reference to the underlying I/O stream wrapped by
-    /// `Framed`.
-    ///
-    /// # Note
-    ///
-    /// Care should be taken to not tamper with the underlying stream of data
-    /// coming in as it may corrupt the stream of frames otherwise being worked
-    /// with.
-    pub fn get_mut(&mut self) -> &mut UdpSocket {
-        &mut self.socket
+        &*self.socket
     }
 
     /// Consumes the `Framed`, returning its underlying I/O stream.
-    pub fn into_inner(self) -> UdpSocket {
-        self.socket
+    pub fn into_inner(mut self) -> UdpSocket {
+        self.recv_fut = None;
+        Arc::try_unwrap(self.socket).unwrap()
     }
 }
 
