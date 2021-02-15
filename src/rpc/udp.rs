@@ -13,6 +13,9 @@ use bytes::BytesMut;
 use futures::{pin_mut, ready, Future, Sink};
 use futures_codec::{Decoder, Encoder};
 
+pub type RecvFuture =
+    Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, usize, SocketAddr)>> + Send + Sync>>;
+
 /// A unified `Stream` and `Sink` interface to an underlying `UdpSocket`, using
 /// the `Encoder` and `Decoder` traits to encode and decode frames.
 ///
@@ -38,9 +41,7 @@ pub struct UdpFramed<C> {
     wr: BytesMut,
     out_addr: SocketAddr,
     flushed: bool,
-    recv_fut: Option<
-        Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, usize, SocketAddr)>> + Send + Sync>>,
-    >,
+    recv_fut: Option<RecvFuture>,
 }
 
 impl<C: Decoder + Unpin> fmt::Debug for UdpFramed<C> {
