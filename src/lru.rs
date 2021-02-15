@@ -28,7 +28,7 @@ impl From<[u8; 4]> for Address {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum CacheKey {
     Local { id: IdBytes, prefix: [u8; 2] },
     Remote(IdBytes),
@@ -66,6 +66,12 @@ impl Ord for CacheKey {
             }
         }
         self.id().0.cmp(&other.id().0)
+    }
+}
+
+impl PartialOrd for CacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -449,7 +455,7 @@ mod tests {
         let key = CacheKey::Remote(IdBytes::random());
         let addr = Address::Remote("127.0.0.1:0".parse().unwrap());
 
-        lru_cache.insert(key.clone(), addr.clone());
+        lru_cache.insert(key.clone(), addr);
         assert_eq!(lru_cache.len(), 1);
 
         sleep(51);

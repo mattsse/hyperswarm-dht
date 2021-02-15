@@ -775,7 +775,7 @@ impl RpcDht {
     }
 
     /// Handles a finished query.
-    fn query_finished(&mut self, query: QueryStream) -> Option<RpcDhtEvent> {
+    fn query_finished(&mut self, query: QueryStream) -> RpcDhtEvent {
         let is_find_node = query.command().is_find_node();
 
         let result = query.into_result();
@@ -799,20 +799,20 @@ impl RpcDht {
         // first `find_node` query is issued as bootstrap
         if is_find_node && !self.bootstrapped {
             self.bootstrapped = true;
-            return Some(RpcDhtEvent::Bootstrapped {
+            RpcDhtEvent::Bootstrapped {
                 stats: result.stats,
-            });
+            }
+        } else {
+            RpcDhtEvent::QueryResult {
+                id: result.inner,
+                cmd: result.cmd,
+                stats: result.stats,
+            }
         }
-
-        Some(RpcDhtEvent::QueryResult {
-            id: result.inner,
-            cmd: result.cmd,
-            stats: result.stats,
-        })
     }
 
     /// Handles a query that timed out.
-    fn query_timeout(&mut self, query: QueryStream) -> Option<RpcDhtEvent> {
+    fn query_timeout(&mut self, query: QueryStream) -> RpcDhtEvent {
         self.query_finished(query)
     }
 }
@@ -855,14 +855,12 @@ impl Stream for RpcDht {
                             pin.inject_query_event(id, event);
                         }
                         QueryPoolState::Finished(q) => {
-                            if let Some(event) = pin.query_finished(q) {
-                                return Poll::Ready(Some(event));
-                            }
+                            let event = pin.query_finished(q);
+                            return Poll::Ready(Some(event));
                         }
                         QueryPoolState::Timeout(q) => {
-                            if let Some(event) = pin.query_timeout(q) {
-                                return Poll::Ready(Some(event));
-                            }
+                            let event = pin.query_timeout(q);
+                            return Poll::Ready(Some(event));
                         }
                         QueryPoolState::Waiting(None) | QueryPoolState::Idle => {
                             break;

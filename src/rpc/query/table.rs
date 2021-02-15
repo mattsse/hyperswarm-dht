@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::{iter::FromIterator, num::NonZeroUsize};
+use std::num::NonZeroUsize;
 
 use fnv::FnvHashMap;
 
@@ -21,11 +21,10 @@ impl QueryTable {
         T: IntoIterator<Item = Key<PeerId>>,
     {
         // Initialise the closest peers to start the iterator with.
-        let peers = FnvHashMap::from_iter(
-            known_closest_peers
-                .into_iter()
-                .map(|key| (key, PeerState::NotContacted)),
-        );
+        let peers: FnvHashMap<Key<PeerId>, PeerState> = known_closest_peers
+            .into_iter()
+            .map(|key| (key, PeerState::NotContacted))
+            .collect();
 
         Self { id, target, peers }
     }
@@ -163,17 +162,11 @@ pub enum PeerState {
 
 impl PeerState {
     pub fn is_verified(&self) -> bool {
-        match self {
-            PeerState::Succeeded { .. } => true,
-            _ => false,
-        }
+        matches!(self, PeerState::Succeeded { .. })
     }
 
     pub fn is_not_contacted(&self) -> bool {
-        match self {
-            PeerState::NotContacted => true,
-            _ => false,
-        }
+        matches!(self, PeerState::NotContacted)
     }
 
     pub fn get_token(&self) -> Option<&Vec<u8>> {

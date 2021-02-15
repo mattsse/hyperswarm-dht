@@ -225,7 +225,7 @@ where
     ///
     /// The buckets are ordered by proximity to the `local_key`, i.e. the first
     /// bucket is the closest bucket (containing at most one key).
-    pub fn buckets<'a>(&'a mut self) -> impl Iterator<Item = KBucketRef<'a, TKey, TVal>> + 'a {
+    pub fn buckets<'a>(&'a mut self) -> impl Iterator<Item = KBucketRef<'a, TKey, TVal>> + '_ {
         let applied_pending = &mut self.applied_pending;
         self.buckets.iter_mut().enumerate().map(move |(i, b)| {
             if let Some(applied) = b.apply_pending() {
@@ -258,7 +258,7 @@ where
 
     /// Returns an iterator over the keys closest to `target`, ordered by
     /// increasing distance.
-    pub fn closest_keys<'a, T>(&'a mut self, target: &'a T) -> impl Iterator<Item = TKey> + 'a
+    pub fn closest_keys<'a, T>(&'a mut self, target: &'a T) -> impl Iterator<Item = TKey> + '_
     where
         T: Clone + AsRef<KeyBytes>,
     {
@@ -279,7 +279,7 @@ where
     pub fn closest<'a, T>(
         &'a mut self,
         target: &'a T,
-    ) -> impl Iterator<Item = EntryView<TKey, TVal>> + 'a
+    ) -> impl Iterator<Item = EntryView<TKey, TVal>> + '_
     where
         T: Clone + AsRef<KeyBytes>,
         TVal: Clone,

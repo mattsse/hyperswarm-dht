@@ -1,4 +1,9 @@
-#![allow(clippy::ptr_offset_with_cast, clippy::assign_op_pattern, clippy::transmute_ptr_to_ptr)]
+#![allow(
+    clippy::ptr_offset_with_cast,
+    clippy::assign_op_pattern,
+    clippy::transmute_ptr_to_ptr,
+    clippy::manual_range_contains
+)]
 // Copyright 2018 Parity Technologies (UK) Ltd.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,9 +27,10 @@
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
-use sha2::digest::generic_array::{typenum::U32, GenericArray};
+use sha2::digest::generic_array::typenum::U32;
+use sha2::digest::generic_array::GenericArray;
 use sha2::{Digest, Sha256};
-use uint::*;
+use uint::construct_uint;
 
 use crate::rpc::IdBytes;
 
@@ -139,8 +145,8 @@ impl KeyBytes {
     where
         U: AsRef<KeyBytes>,
     {
-        let a = U256::from(self.0.as_ref());
-        let b = U256::from(other.as_ref().0.as_ref());
+        let a = U256::from(self.0.as_slice());
+        let b = U256::from(other.as_ref().0.as_slice());
         Distance(a ^ b)
     }
 
@@ -150,7 +156,7 @@ impl KeyBytes {
     ///
     /// `self xor other = distance <==> other = self xor distance`
     pub fn for_distance(&self, d: Distance) -> KeyBytes {
-        let key_int = U256::from(self.0.as_ref()) ^ d.0;
+        let key_int = U256::from(self.0.as_slice()) ^ d.0;
         KeyBytes(GenericArray::from(<[u8; 32]>::from(key_int)))
     }
 }

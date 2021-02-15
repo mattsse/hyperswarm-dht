@@ -876,7 +876,7 @@ impl<T: fmt::Debug> GetResult<T> {
     }
 
     /// Returns an iterator over all received values
-    pub fn values<'a>(&'a self) -> impl Iterator<Item = &'a T> + 'a {
+    pub fn values<'a>(&'a self) -> impl Iterator<Item = &'a T> + '_ {
         self.responses.iter().map(|r| &r.value)
     }
 
@@ -917,25 +917,25 @@ impl Lookup {
     /// Returns an iterator over all the nodes that sent data for this look
     pub fn origins<'a>(
         &'a self,
-    ) -> impl Iterator<Item = (&'a SocketAddr, Option<&'a IdBytes>)> + 'a {
+    ) -> impl Iterator<Item = (&'a SocketAddr, Option<&'a IdBytes>)> + '_ {
         self.peers
             .iter()
             .map(|peer| (&peer.node, peer.peer_id.as_ref()))
     }
 
     /// Returns an iterator over all remote peers that announced the topic hash
-    pub fn remotes<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+    pub fn remotes<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + '_ {
         self.peers.iter().flat_map(|peer| peer.peers.iter())
     }
 
     /// Returns an iterator over all LAN peers that announced the topic hash
-    pub fn locals<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+    pub fn locals<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + '_ {
         self.peers.iter().flat_map(|peer| peer.local_peers.iter())
     }
 
     /// Returns an iterator over all peers (remote and LAN) that announced the
     /// topic hash.
-    pub fn all_peers<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + 'a {
+    pub fn all_peers<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> + '_ {
         self.peers
             .iter()
             .flat_map(|peer| peer.peers.iter().chain(peer.local_peers.iter()))
