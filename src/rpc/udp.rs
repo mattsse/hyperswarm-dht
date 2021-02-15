@@ -15,9 +15,27 @@ use futures_codec::{Decoder, Encoder};
 
 pub type RecvFuture =
     Pin<Box<dyn Future<Output = (Vec<u8>, io::Result<(usize, SocketAddr)>)> + Send + Sync>>;
-
-// pub type SendFuture = Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + Send + Sync>>;
 pub type SendFuture = Pin<Box<dyn Future<Output = (BytesMut, io::Result<usize>)> + Send + Sync>>;
+
+const INITIAL_RD_CAPACITY: usize = 64 * 1024;
+const INITIAL_WR_CAPACITY: usize = 8 * 1024;
+
+async fn recv_next(
+    socket: Arc<UdpSocket>,
+    mut buf: Vec<u8>,
+) -> (Vec<u8>, io::Result<(usize, SocketAddr)>) {
+    let res = socket.recv_from(&mut buf).await;
+    (buf, res)
+}
+
+async fn send_next(
+    socket: Arc<UdpSocket>,
+    addr: SocketAddr,
+    buf: BytesMut,
+) -> (BytesMut, io::Result<usize>) {
+    let res = socket.send_to(&buf, addr).await;
+    (buf, res)
+}
 
 /// A unified `Stream` and `Sink` interface to an underlying `UdpSocket`, using
 /// the `Encoder` and `Decoder` traits to encode and decode frames.
@@ -40,10 +58,10 @@ pub type SendFuture = Pin<Box<dyn Future<Output = (BytesMut, io::Result<usize>)>
 pub struct UdpFramed<C> {
     socket: Arc<UdpSocket>,
     codec: C,
-    recv_buf: Option<Vec<u8>>,
-    send_buf: Option<BytesMut>,
     out_addr: SocketAddr,
     flushed: bool,
+    recv_buf: Option<Vec<u8>>,
+    send_buf: Option<BytesMut>,
     recv_fut: Option<RecvFuture>,
     send_fut: Option<SendFuture>,
 }
@@ -56,10 +74,6 @@ impl<C: Decoder + Unpin> fmt::Debug for UdpFramed<C> {
             .field("flushed", &self.flushed)
             .finish()
     }
-}
-
-pub fn io_error(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, message)
 }
 
 impl<C: Decoder + Unpin> Stream for UdpFramed<C> {
@@ -93,35 +107,15 @@ impl<C: Decoder + Unpin> Stream for UdpFramed<C> {
     }
 }
 
-async fn recv_next(
-    socket: Arc<UdpSocket>,
-    mut buf: Vec<u8>,
-) -> (Vec<u8>, io::Result<(usize, SocketAddr)>) {
-    let res = socket.recv_from(&mut buf).await;
-    (buf, res)
-}
-
-async fn send_next(
-    socket: Arc<UdpSocket>,
-    addr: SocketAddr,
-    buf: BytesMut,
-) -> (BytesMut, io::Result<usize>) {
-    let res = socket.send_to(&buf, addr).await;
-    (buf, res)
-}
-
 impl<C: Encoder + Unpin> Sink<(C::Item, SocketAddr)> for UdpFramed<C> {
     type Error = C::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if !self.flushed {
-            match self.poll_flush(cx)? {
-                Poll::Ready(()) => Poll::Ready(Ok(())),
-                Poll::Pending => Poll::Pending,
-            }
-        } else {
-            Poll::Ready(Ok(()))
-        }
+        self.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.poll_flush(cx)
     }
 
     fn start_send(self: Pin<&mut Self>, item: (C::Item, SocketAddr)) -> Result<(), Self::Error> {
@@ -167,18 +161,9 @@ impl<C: Encoder + Unpin> Sink<(C::Item, SocketAddr)> for UdpFramed<C> {
         self.send_buf = Some(buf);
         self.send_fut = None;
         self.flushed = true;
-
         Poll::Ready(res)
     }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.poll_flush(cx))?;
-        Poll::Ready(Ok(()))
-    }
 }
-
-const INITIAL_RD_CAPACITY: usize = 64 * 1024;
-const INITIAL_WR_CAPACITY: usize = 8 * 1024;
 
 impl<C> UdpFramed<C> {
     /// Create a new `UdpFramed` backed by the given socket and codec.
@@ -213,6 +198,10 @@ impl<C> UdpFramed<C> {
         self.recv_fut = None;
         Arc::try_unwrap(self.socket).unwrap()
     }
+}
+
+pub fn io_error(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, message)
 }
 
 #[cfg(test)]
