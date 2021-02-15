@@ -232,23 +232,14 @@ pub enum Command {
 
 impl Command {
     pub fn is_ping(&self) -> bool {
-        match self {
-            Command::Ping => true,
-            _ => false,
-        }
+        matches!(self, Command::Ping)
     }
 
     pub fn is_find_node(&self) -> bool {
-        match self {
-            Command::FindNode => true,
-            _ => false,
-        }
+        matches!(self, Command::FindNode)
     }
     pub fn is_holepunch(&self) -> bool {
-        match self {
-            Command::Holepunch => true,
-            _ => false,
-        }
+        matches!(self, Command::Holepunch)
     }
 
     pub fn is_custom(&self, s: &str) -> bool {

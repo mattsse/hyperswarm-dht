@@ -23,7 +23,7 @@ const V_SEG: &[u8; 3] = b"1:v";
 #[inline]
 pub fn salt(val: &[u8], size: usize) -> Vec<u8> {
     use blake2::digest::{Update, VariableOutput};
-    assert!(size >= 16 && size <= 64);
+    assert!((16..=64).contains(&size));
     let mut salt = Vec::with_capacity(size);
     let mut hasher = VarBlake2b::new(size).unwrap();
     hasher.update(val);
@@ -38,7 +38,7 @@ pub fn salt(val: &[u8], size: usize) -> Vec<u8> {
 /// Size must be in range [16-64], panics otherwise
 #[inline]
 pub fn random_salt(size: usize) -> Vec<u8> {
-    assert!(size >= 16 && size <= 64);
+    assert!((16..=64).contains(&size));
     let mut salt = vec![0; size];
     fill_random_bytes(&mut salt);
     salt
@@ -99,6 +99,7 @@ pub fn signature(mutable: &Mutable) -> Option<Signature> {
     }
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn signable(value: &[u8], salt: Option<&Vec<u8>>, seq: u64) -> Result<Vec<u8>, ()> {
     let cap = SEQ_SEG.len() + 3 + V_SEG.len() + 3 + value.len();
 
@@ -124,6 +125,7 @@ pub fn signable(value: &[u8], salt: Option<&Vec<u8>>, seq: u64) -> Result<Vec<u8
     Ok(s)
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn signable_mutable(mutable: &Mutable) -> Result<Vec<u8>, ()> {
     if let Some(ref val) = mutable.value {
         signable(val, mutable.salt.as_ref(), mutable.seq.unwrap_or_default())

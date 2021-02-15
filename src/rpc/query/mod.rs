@@ -478,17 +478,11 @@ pub enum QueryType {
 
 impl QueryType {
     pub fn is_query(&self) -> bool {
-        match self {
-            QueryType::Query | QueryType::QueryUpdate => true,
-            _ => false,
-        }
+        matches!(self, QueryType::Query | QueryType::QueryUpdate)
     }
 
     pub fn is_update(&self) -> bool {
-        match self {
-            QueryType::Update | QueryType::QueryUpdate => true,
-            _ => false,
-        }
+        matches!(self, QueryType::Update | QueryType::QueryUpdate)
     }
 }
 
