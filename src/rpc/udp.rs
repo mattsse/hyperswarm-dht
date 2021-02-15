@@ -10,11 +10,14 @@ use async_std::{
     stream::Stream,
 };
 use bytes::BytesMut;
-use futures::{pin_mut, ready, Future, Sink};
+use futures::{ready, Future, Sink};
 use futures_codec::{Decoder, Encoder};
 
 pub type RecvFuture =
-    Pin<Box<dyn Future<Output = io::Result<(Vec<u8>, usize, SocketAddr)>> + Send + Sync>>;
+    Pin<Box<dyn Future<Output = (Vec<u8>, io::Result<(usize, SocketAddr)>)> + Send + Sync>>;
+
+// pub type SendFuture = Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + Send + Sync>>;
+pub type SendFuture = Pin<Box<dyn Future<Output = (BytesMut, io::Result<usize>)> + Send + Sync>>;
 
 /// A unified `Stream` and `Sink` interface to an underlying `UdpSocket`, using
 /// the `Encoder` and `Decoder` traits to encode and decode frames.
@@ -37,11 +40,12 @@ pub type RecvFuture =
 pub struct UdpFramed<C> {
     socket: Arc<UdpSocket>,
     codec: C,
-    rd: Option<Vec<u8>>,
-    wr: BytesMut,
+    recv_buf: Option<Vec<u8>>,
+    send_buf: Option<BytesMut>,
     out_addr: SocketAddr,
     flushed: bool,
     recv_fut: Option<RecvFuture>,
+    send_fut: Option<SendFuture>,
 }
 
 impl<C: Decoder + Unpin> fmt::Debug for UdpFramed<C> {
@@ -54,49 +58,56 @@ impl<C: Decoder + Unpin> fmt::Debug for UdpFramed<C> {
     }
 }
 
+pub fn io_error(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, message)
+}
+
 impl<C: Decoder + Unpin> Stream for UdpFramed<C> {
     type Item = Result<(C::Item, SocketAddr), C::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        loop {
-            if self.recv_fut.is_none() {
-                let buf = self.rd.take().unwrap();
-                let recv_fut = recv_next(self.socket.clone(), buf);
-                self.recv_fut = Some(Box::pin(recv_fut));
-            }
-
-            if let Some(f) = &mut self.recv_fut {
-                let res = ready!(f.as_mut().poll(cx));
-                self.recv_fut = None;
-                let res = match res {
-                    Err(e) => Poll::Ready(Some(Err(e.into()))),
-                    Ok((buf, 0, _addr)) => {
-                        self.rd = Some(buf);
-                        continue;
-                    }
-                    Ok((buf, n, addr)) => {
-                        let frame_res = self.codec.decode(&mut buf[..n].into());
-                        let frame = frame_res?;
-                        let result = frame.map(|frame| Ok((frame, addr)));
-                        self.rd = Some(buf);
-
-                        Poll::Ready(result)
-                    }
-                };
-                return res;
-            }
+        if self.recv_fut.is_none() {
+            let buf = self.recv_buf.take().unwrap();
+            let recv_fut = recv_next(self.socket.clone(), buf);
+            self.recv_fut = Some(Box::pin(recv_fut));
         }
+
+        let fut = self.recv_fut.as_mut().unwrap();
+
+        let (buf, recv_res) = ready!(fut.as_mut().poll(cx));
+
+        let res = match recv_res {
+            Err(e) => Some(Err(e.into())),
+            Ok((n, addr)) => {
+                let frame = self.codec.decode(&mut buf[..n].into());
+                match frame {
+                    Err(e) => Some(Err(e)),
+                    Ok(Some(frame)) => Some(Ok((frame, addr))),
+                    Ok(None) => Some(Err(io_error("received empty package").into())),
+                }
+            }
+        };
+        self.recv_buf = Some(buf);
+        self.recv_fut = None;
+        Poll::Ready(res)
     }
 }
 
 async fn recv_next(
     socket: Arc<UdpSocket>,
     mut buf: Vec<u8>,
-) -> io::Result<(Vec<u8>, usize, SocketAddr)> {
-    match socket.recv_from(&mut buf).await {
-        Err(e) => Err(e),
-        Ok((n, addr)) => Ok((buf, n, addr)),
-    }
+) -> (Vec<u8>, io::Result<(usize, SocketAddr)>) {
+    let res = socket.recv_from(&mut buf).await;
+    (buf, res)
+}
+
+async fn send_next(
+    socket: Arc<UdpSocket>,
+    addr: SocketAddr,
+    buf: BytesMut,
+) -> (BytesMut, io::Result<usize>) {
+    let res = socket.send_to(&buf, addr).await;
+    (buf, res)
 }
 
 impl<C: Encoder + Unpin> Sink<(C::Item, SocketAddr)> for UdpFramed<C> {
@@ -105,24 +116,25 @@ impl<C: Encoder + Unpin> Sink<(C::Item, SocketAddr)> for UdpFramed<C> {
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if !self.flushed {
             match self.poll_flush(cx)? {
-                Poll::Ready(()) => {}
-                Poll::Pending => return Poll::Pending,
+                Poll::Ready(()) => Poll::Ready(Ok(())),
+                Poll::Pending => Poll::Pending,
             }
+        } else {
+            Poll::Ready(Ok(()))
         }
-
-        Poll::Ready(Ok(()))
     }
 
     fn start_send(self: Pin<&mut Self>, item: (C::Item, SocketAddr)) -> Result<(), Self::Error> {
         let (frame, out_addr) = item;
-
         let pin = self.get_mut();
-
-        pin.codec.encode(frame, &mut pin.wr)?;
-        pin.out_addr = out_addr;
-        pin.flushed = false;
-
-        Ok(())
+        if let Some(buf) = pin.send_buf.as_mut() {
+            pin.codec.encode(frame, buf)?;
+            pin.out_addr = out_addr;
+            pin.flushed = false;
+            Ok(())
+        } else {
+            Err(io_error("start_send called while send in process").into())
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -130,32 +142,31 @@ impl<C: Encoder + Unpin> Sink<(C::Item, SocketAddr)> for UdpFramed<C> {
             return Poll::Ready(Ok(()));
         }
 
-        let Self {
-            ref mut socket,
-            ref mut out_addr,
-            ref mut wr,
-            ..
-        } = *self;
-
-        let n = {
-            let fut = socket.send_to(&wr, *out_addr);
-            pin_mut!(fut);
-            ready!(fut.poll(cx))?
+        if self.send_fut.is_none() {
+            let socket = self.socket.clone();
+            let buf = self.send_buf.take().unwrap();
+            let fut = send_next(socket, self.out_addr, buf);
+            self.send_fut = Some(Box::pin(fut));
         };
 
-        let wrote_all = n == self.wr.len();
-        self.wr.clear();
+        let fut = self.send_fut.as_mut().unwrap();
+        let (mut buf, send_res) = ready!(fut.as_mut().poll(cx));
+
+        let res = match send_res {
+            Err(e) => Err(e.into()),
+            Ok(n) => {
+                if n == buf.len() {
+                    Ok(())
+                } else {
+                    Err(io_error("failed to write entire datagram to socket").into())
+                }
+            }
+        };
+
+        buf.clear();
+        self.send_buf = Some(buf);
+        self.send_fut = None;
         self.flushed = true;
-
-        let res = if wrote_all {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to write entire datagram to socket",
-            )
-            .into())
-        };
 
         Poll::Ready(res)
     }
@@ -177,11 +188,12 @@ impl<C> UdpFramed<C> {
         UdpFramed {
             socket: Arc::new(socket),
             codec,
-            out_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
-            rd: Some(vec![0u8; INITIAL_RD_CAPACITY]),
-            wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
+            recv_buf: Some(vec![0u8; INITIAL_RD_CAPACITY]),
             recv_fut: None,
+            send_buf: Some(BytesMut::with_capacity(INITIAL_WR_CAPACITY)),
+            send_fut: None,
+            out_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
         }
     }
 
