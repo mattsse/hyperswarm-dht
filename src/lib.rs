@@ -297,6 +297,7 @@ impl HyperDht {
                 // callback
                 let port = peer
                     .port
+                    .filter(|port| *port != 0)
                     .and_then(|port| u16::try_from(port).ok())
                     .unwrap_or_else(|| query.peer.addr.port());
 
