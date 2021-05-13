@@ -220,7 +220,7 @@ where
 
     fn request(&mut self, mut ev: MessageEvent<TUserData>) {
         let (msg, peer) = ev.inner_mut();
-        msg.rid = self.next_req_id().0;
+        msg.rid = self.next_req_id().0 as u64;
 
         if msg.is_holepunch() && peer.referrer.is_some() {
             match &ev {

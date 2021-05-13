@@ -154,7 +154,7 @@ impl Message {
     }
 
     pub(crate) fn get_request_id(&self) -> RequestId {
-        RequestId(self.rid)
+        RequestId(self.rid as u16)
     }
 
     pub(crate) fn key(&self, peer: &Peer) -> Option<kbucket::Key<PeerId>> {

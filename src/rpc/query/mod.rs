@@ -552,7 +552,7 @@ impl From<CommandQuery> for CommandQueryResponse {
         let msg = Message {
             version: Some(VERSION),
             r#type: Type::Response.id(),
-            rid: q.rid.0,
+            rid: q.rid.0 as u64,
             to: Some(q.peer.encode()),
             id: None,
             target: None,
