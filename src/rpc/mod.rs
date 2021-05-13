@@ -1040,7 +1040,7 @@ impl Response {
 /// Unique identifier for a request. Must be passed back in order to answer a
 /// request from the remote.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct RequestId(pub(crate) u64);
+pub struct RequestId(pub(crate) u16);
 
 #[derive(Debug)]
 pub enum RpcDhtEvent {
