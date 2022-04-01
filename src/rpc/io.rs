@@ -165,7 +165,7 @@ where
 
     fn random_id() -> RequestId {
         use rand::Rng;
-        RequestId(rand::thread_rng().gen())
+        RequestId(rand::thread_rng().gen_range(0, u16::MAX as u64))
     }
 
     #[inline]
