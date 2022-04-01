@@ -14,6 +14,7 @@ use either::Either;
 use fnv::FnvHashMap;
 use futures::task::{Context, Poll};
 use futures::Stream;
+use log::*;
 use prost::Message as ProstMessage;
 use sha2::digest::generic_array::{typenum::U32, GenericArray};
 use smallvec::alloc::collections::VecDeque;
@@ -525,6 +526,7 @@ impl Stream for HyperDht {
             }
 
             while let Poll::Ready(Some(ev)) = Stream::poll_next(Pin::new(&mut pin.inner), cx) {
+                trace!("DHT event {:?}", ev);
                 match ev {
                     RpcDhtEvent::RequestResult(Ok(RequestOk::CustomCommandRequest { query })) => {
                         pin.on_command(query)

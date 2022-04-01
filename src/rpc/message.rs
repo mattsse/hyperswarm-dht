@@ -83,6 +83,36 @@ pub struct Message {
     pub value: ::std::option::Option<std::vec::Vec<u8>>,
 }
 
+// This is more like a Debug impl, but the Debug impl is auto-impl'd by prost::Message and
+// too verbose usually.
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("M")
+            // .field("version", &self.version)
+            .field("ty", &self.r#type)
+            .field("rid", &self.rid)
+            .field(
+                "to",
+                &self
+                    .get_to_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or("None".to_string()),
+            )
+            .field("id", &fmt_buf(&self.id))
+            .field("cn", &fmt_buf(&self.closer_nodes))
+            .field("rt", &fmt_buf(&self.roundtrip_token))
+            .field("err", &self.error)
+            .field("val", &fmt_buf(&self.value))
+            .finish()
+    }
+}
+
+fn fmt_buf(buf: &Option<Vec<u8>>) -> String {
+    buf.as_ref()
+        .map(|buf| pretty_hash::fmt(buf).unwrap())
+        .unwrap_or("".into())
+}
+
 impl Message {
     pub fn is_query(&self) -> bool {
         self.r#type == Type::Query.id()
